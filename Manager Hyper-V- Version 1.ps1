@@ -1,78 +1,39 @@
-# ==============================
-#        OUTIL HYPER-V 
-# ==============================
+# SCRIPT DE GESTION HYPER-V
 
-function Show-Tableau {
-    param (
-        [string[]]$Lignes,
-        [string]$CouleurBordure = "Cyan",
-        [string]$CouleurTexte = "White"
-    )
-    $largeurConsole = [console]::WindowWidth
-    $maxLen = ($Lignes | Measure-Object -Property Length -Maximum).Maximum
-    $largeurTableau = [Math]::Min($maxLen + 6, $largeurConsole - 2)
-    $maxContent = $largeurTableau - 4
-    $finalLignes = @()
-    foreach ($ligne in $Lignes) {
-        while ($ligne.Length -gt $maxContent) {
-            $finalLignes += $ligne.Substring(0, $maxContent)
-            $ligne = $ligne.Substring($maxContent)
-        }
-        $finalLignes += $ligne
-    }
-    $videHaut = [Math]::Max(0, [int](($host.UI.RawUI.WindowSize.Height - $finalLignes.Count - 4) / 2))
-    for ($i = 0; $i -lt $videHaut; $i++) { Write-Host "" }
-    $bordure = "+" + ("-" * ($largeurTableau - 2)) + "+"
-    Write-Host (" " * [Math]::Max(0,($largeurConsole - $largeurTableau)/2)) -NoNewline
-    Write-Host $bordure -ForegroundColor $CouleurBordure
-    foreach ($ligne in $finalLignes) {
-        $txt = " $ligne"
-        $pad = $largeurTableau - 2 - ($txt).Length
-        if ($pad -lt 0) { $pad = 0 }
-        $gauche = [Math]::Max(0,($largeurConsole - $largeurTableau)/2)
-        Write-Host (" " * $gauche + "|" + $txt + (" " * $pad) + "|") -ForegroundColor $CouleurTexte
-    }
-    Write-Host (" " * [Math]::Max(0,($largeurConsole - $largeurTableau)/2)) -NoNewline
-    Write-Host $bordure -ForegroundColor $CouleurBordure
+# --- FONCTIONS UTILITAIRES ---
+
+function AFFICHER-MESSAGE($MESSAGE, $COULEUR = "WHITE") {
+    WRITE-HOST $MESSAGE -FOREGROUNDCOLOR $COULEUR
 }
 
-function Saisir-Nombre($MESSAGE) {
+function PAUSE {
+    AFFICHER-MESSAGE "Cliquer sur Entree pour continuer..." "GRAY"
+    $null = READ-HOST
+    Clear-Host
+}
+
+function SAISIR-NOMBRE($MESSAGE, [int]$MIN = 0, [int]$MAX = [INT32]::MaxValue) {
     DO {
         $VALEUR = READ-HOST $MESSAGE
-        IF ($VALEUR -match '^\d+$') { RETURN [int]$VALEUR }
-        Clear-Host
-        Show-Tableau @("SAISISSEZ UNIQUEMENT UN NOMBRE (EX : 4)") -CouleurBordure "Red" -CouleurTexte "White"
+        IF ($VALEUR -match '^\d+$' -and [int]$VALEUR -ge $MIN -and [int]$VALEUR -le $MAX) { RETURN [int]$VALEUR }
+        AFFICHER-MESSAGE "SAISISSEZ UNIQUEMENT UN NOMBRE VALIDE (ENTRE $MIN ET $MAX)" "RED"
     } WHILE ($TRUE)
 }
 
-function Barre-ProgressSimulee($Message) {
-    $steps = 25
-    $startTime = Get-Date
-    for ($j = 1; $j -le $steps; $j++) {
-        $percent = [math]::Round($j * (100 / $steps))
-        $elapsed = (Get-Date) - $startTime
-        $timer = $elapsed.ToString("hh\:mm\:ss")
-        Write-Host -NoNewline "`r$Message : $percent %  ($timer)     "
-        Start-Sleep -Milliseconds 100
-    }
-    Write-Host ""
+function SAISIR-CHOIX($PROMPT, [string[]]$CHOIX_VALIDE) {
+    DO {
+        $CHOIX = (READ-HOST $PROMPT).TOUPPER()
+        IF ($CHOIX_VALIDE -contains $CHOIX) { RETURN $CHOIX }
+        AFFICHER-MESSAGE "CHOIX INVALIDE. VEUILLEZ SELECTIONNER PARMI: $($CHOIX_VALIDE -join ', ')" "RED"
+    } WHILE ($TRUE)
 }
 
-function Export-VM-AvcProgress($Name, $ExportPath) {
-    Clear-Host
-    Show-Tableau @("EXPORTATION DE $Name VERS $ExportPath...") -CouleurBordure "Yellow"
-    EXPORT-VM -NAME $Name -PATH $ExportPath | Out-Null
-    Barre-ProgressSimulee "EXPORT EN COURS"
-    Clear-Host
-    Show-Tableau @("EXPORT TERMINE !") -CouleurBordure "Green"
-}
-
-function Detect-TypeOS($VMName) {
+function DETECT-TYPEOS($VMName) {
     $result = @{}
-    if ($VMName -match "windows|win|core|serveur|server") {
+    if ($VMName -match "WINDOWS|WIN|CORE|SERVEUR|SERVER") {
         $result.cpu = 2
         $result.msg = "TYPE DETECTE : WINDOWS/SERVER/CORE - PROPOSITION : 2 COEURS"
-    } elseif ($VMName -match "linux|debian|ubuntu|centos|freebsd|firewall|pf|pfsense|openwrt|alpine|vyos|opnsense") {
+    } elseif ($VMName -match "LINUX|DEBIAN|UBUNTU|CENTOS|FREEBSD|FIREWALL|PF|PFSENSE|OPENWRT|ALPINE|VYOS|OPNSENSE") {
         $result.cpu = 1
         $result.msg = "TYPE DETECTE : LINUX/BSD/FIREWALL/AUTRES - PROPOSITION : 1 COEUR"
     } else {
@@ -82,545 +43,1250 @@ function Detect-TypeOS($VMName) {
     return $result
 }
 
-function Selection-Env {
-    DO {
-        Clear-Host
-        Show-Tableau @(
-            "",
-            "SELECTION DE L'ENVIRONNEMENT",
-            "",
-            "1. WINDOWS SERVEUR CORE",
-            "2. WINDOWS SERVEUR CLASSIQUE",
-            "3. WINDOWS NORMAL (DESKTOP/PRO)",
-            "",
-            "R. RAFRAICHIR / RECENTRER LE MENU",
-            ""
-        ) -CouleurBordure "Magenta" -CouleurTexte "Yellow"
-        $TYPE_WINDOWS = READ-HOST "CHOISISSEZ VOTRE ENVIRONNEMENT (1-3, R)"
-        IF ($TYPE_WINDOWS.ToUpper() -eq "R") { CONTINUE }
-    } WHILE ($TYPE_WINDOWS -notin "1","2","3")
-    RETURN $TYPE_WINDOWS
-}
-
-function Copy-VM-AvcProgress($SRC, $DEST_PARENT) {
-    $VM_FOLDER_NAME = Split-Path $SRC -Leaf
-    $DEST_FINAL = Join-Path $DEST_PARENT $VM_FOLDER_NAME
-    if (Test-Path $DEST_FINAL) {
-        Clear-Host
-        Show-Tableau @("LE DOSSIER $DEST_FINAL EXISTE DEJA. SUPPRIME-LE AVANT OU CHOISIS UN AUTRE NOM DE DOSSIER.") -CouleurBordure "Red"
-        return $null
+function AFFICHER-TABLEAU($ENTETES, $DONNEES) {
+    $longueurs = @{}
+    
+    # Calcul des longueurs maximales pour chaque colonne
+    foreach ($entete in $ENTETES) {
+        $longueurs[$entete] = $entete.Length
     }
-    Clear-Host
-    Show-Tableau @("COPIE DE $SRC VERS $DEST_FINAL...") -CouleurBordure "Yellow"
-    robocopy $SRC $DEST_FINAL /E /COPYALL /R:1 /W:1 | Out-Null
-    Barre-ProgressSimulee "COPIE EN COURS"
-    Clear-Host
-    Show-Tableau @("COPIE TERMINEE !") -CouleurBordure "Green"
-    return $DEST_FINAL
+    foreach ($donnee in $DONNEES) {
+        foreach ($entete in $ENTETES) {
+            $longueur_valeur = "$($donnee.($entete))".Length
+            if ($longueur_valeur -gt $longueurs[$entete]) {
+                $longueurs[$entete] = $longueur_valeur
+            }
+        }
+    }
+    
+    # Bordure superieure
+    $bordure = "+-" + (($ENTETES | ForEach-Object { "-" * $longueurs[$_] }) -join "-+-") + "-+"
+    AFFICHER-MESSAGE $bordure "CYAN"
+    
+    # En-tetes
+    $ligne_entete = "| " + (($ENTETES | ForEach-Object { "{0,-$($longueurs[$_])}" -f $_ }) -join " | ") + " |"
+    AFFICHER-MESSAGE $ligne_entete "CYAN"
+    
+    # Bordure de separation
+    $bordure_sep = "+-" + (($ENTETES | ForEach-Object { "-" * $longueurs[$_] }) -join "-+-") + "-+"
+    AFFICHER-MESSAGE $bordure_sep "CYAN"
+    
+    # Donnees
+    foreach ($donnee in $DONNEES) {
+        $ligne_donnee = "| " + (($ENTETES | ForEach-Object { "{0,-$($longueurs[$_])}" -f "$($donnee.($_))" }) -join " | ") + " |"
+        AFFICHER-MESSAGE $ligne_donnee "WHITE"
+    }
+    
+    # Bordure inferieure
+    AFFICHER-MESSAGE $bordure "CYAN"
 }
 
-$CHEMIN_ISO_DEFAUT = "D:\IMAGES_ISO\INSTALL_WINDOWS10.ISO"
 
-function Afficher-MenuDepart {
+# --- GESTION DES MACHINES VIRTUELLES ---
+function LISTER-VM {
     Clear-Host
-    Show-Tableau @(
-        "",
-        "OUTIL SCRIPT GESTION HYPER-V EN LIGNE DE COMMANDE",
-        "",
-        "1. MODE MENU AVANCE DOUBLE NIVEAU",
-        "",
-        "R. RAFRAICHIR / RECENTRER LE MENU",
-        "Q. QUITTER"
-    ) -CouleurBordure "Blue" -CouleurTexte "White"
+    AFFICHER-MESSAGE "LISTE DES MACHINES VIRTUELLES :" "CYAN"
+    TRY {
+        $vms = GET-VM | SELECT-OBJECT NAME, STATE, CPUUSAGE, MEMORYASSIGNED, UPTIME, VERSION, DYNAMICMEMORYENABLED
+
+        IF (-NOT $vms) {
+            AFFICHER-MESSAGE "AUCUNE VM TROUVEE." "RED"
+        } ELSE {
+            $donnees_vm = @()
+            foreach ($vm in $vms) {
+                $ram = "{0:N0} MB" -f ([Math]::ROUND($vm.MEMORYASSIGNED / 1MB))
+                $uptime = if ($vm.STATE -eq "RUNNING") {
+                    $days = [Math]::FLOOR($vm.UPTIME.TOTALDAYS)
+                    $hours = $vm.UPTIME.HOURS
+                    $minutes = $vm.UPTIME.MINUTES
+                    "$($days)J $($hours)H $($minutes)M"
+                } else { "N/A" }
+                
+                $donnees_vm += [PSCustomObject]@{
+                    NOM                = $vm.NAME
+                    ETAT               = $vm.STATE
+                    CPU                = "$($vm.CPUUSAGE)%"
+                    RAM                = $ram
+                    UPTIME             = $uptime
+                    VERSION            = $vm.VERSION
+                    "MEMOIRE DYNAMIQUE" = if ($vm.DYNAMICMEMORYENABLED) { "Oui" } else { "Non" }
+                }
+            }
+            $entetes_vm = "NOM", "ETAT", "CPU", "RAM", "UPTIME", "VERSION", "MEMOIRE DYNAMIQUE"
+            AFFICHER-TABLEAU $entetes_vm $donnees_vm
+        }
+    } CATCH {
+        AFFICHER-MESSAGE "ERREUR : IMPOSSIBLE DE LISTER LES VMS. VERIFIEZ QUE LES MODULES HYPER-V SONT INSTALLEES." "RED"
+    }
+    PAUSE
 }
 
-function MENU_AVANCE {
-    $TYPE_WINDOWS = Selection-Env
+function DEMARRER-VM {
+    Clear-Host
+    AFFICHER-MESSAGE "VMS DISPONIBLES A DEMARRER :" "CYAN"
+    $vms = GET-VM | WHERE-OBJECT { $_.STATE -NE "RUNNING" }
+    
+    IF ($vms.COUNT -EQ 0) {
+        AFFICHER-MESSAGE "AUCUNE VM N'EST ARRETEE." "RED"
+        PAUSE
+        RETURN
+    }
+
+    $donnees_vm = @()
+    for ($i = 0; $i -lt $vms.Count; $i++) {
+        $donnees_vm += [PSCustomObject]@{
+            "NUMERO" = $i+1
+            "NOM" = $vms[$i].NAME
+        }
+    }
+    AFFICHER-TABLEAU @("NUMERO", "NOM") $donnees_vm
+    
+    $CHOIX_VM = SAISIR-NOMBRE "NUMERO DE LA VM A DEMARRER" 1 $vms.COUNT
+    $NAME = $vms[$CHOIX_VM-1].NAME
+    TRY {
+        START-VM -NAME $NAME -ERRORACTION STOP
+        AFFICHER-MESSAGE "VM $NAME DEMARREE." "GREEN"
+    } CATCH {
+        AFFICHER-MESSAGE "ERREUR LORS DU DEMARRAGE DE LA VM : $($_.EXCEPTION.MESSAGE)" "RED"
+    }
+    PAUSE
+}
+
+function ARRETER-VM {
+    Clear-Host
+    AFFICHER-MESSAGE "VMS DISPONIBLES A ARRETER :" "CYAN"
+    $vms = GET-VM | WHERE-OBJECT { $_.STATE -EQ "RUNNING" }
+
+    IF ($vms.COUNT -EQ 0) {
+        AFFICHER-MESSAGE "AUCUNE VM N'EST EN COURS D'EXECUTION." "RED"
+        PAUSE
+        RETURN
+    }
+
+    $donnees_vm = @()
+    for ($i = 0; $i -lt $vms.Count; $i++) {
+        $donnees_vm += [PSCustomObject]@{
+            "NUMERO" = $i+1
+            "NOM" = $vms[$i].NAME
+        }
+    }
+    AFFICHER-TABLEAU @("NUMERO", "NOM") $donnees_vm
+
+    $CHOIX_VM = SAISIR-NOMBRE "NUMERO DE LA VM A ARRETER" 1 $vms.COUNT
+    $NAME = $vms[$CHOIX_VM-1].NAME
+    $confirm = READ-HOST "VOULEZ-VOUS VRAIMENT ARRETER LA VM $NAME ? (O/N)"
+    IF ($confirm.TOUPPER() -EQ "O") {
+        TRY {
+            STOP-VM -NAME $NAME -FORCE -ERRORACTION STOP
+            AFFICHER-MESSAGE "VM $NAME ARRETEE." "GREEN"
+        } CATCH {
+            AFFICHER-MESSAGE "ERREUR LORS DE L'ARRET DE LA VM : $($_.EXCEPTION.MESSAGE)" "RED"
+        }
+    } ELSE {
+        AFFICHER-MESSAGE "OPERATION ANNULEE." "YELLOW"
+    }
+    PAUSE
+}
+
+function REDEMARRER-VM {
+    Clear-Host
+    AFFICHER-MESSAGE "VMS DISPONIBLES A REDEMARRER :" "CYAN"
+    $vms = GET-VM | WHERE-OBJECT { $_.STATE -EQ "RUNNING" }
+
+    IF ($vms.COUNT -EQ 0) {
+        AFFICHER-MESSAGE "AUCUNE VM N'EST EN COURS D'EXECUTION." "RED"
+        PAUSE
+        RETURN
+    }
+
+    $donnees_vm = @()
+    for ($i = 0; $i -lt $vms.Count; $i++) {
+        $donnees_vm += [PSCustomObject]@{
+            "NUMERO" = $i+1
+            "NOM" = $vms[$i].NAME
+        }
+    }
+    AFFICHER-TABLEAU @("NUMERO", "NOM") $donnees_vm
+
+    $CHOIX_VM = SAISIR-NOMBRE "NUMERO DE LA VM A REDEMARRER" 1 $vms.COUNT
+    $NAME = $vms[$CHOIX_VM-1].NAME
+    $confirm = READ-HOST "VOULEZ-VOUS VRAIMENT REDEMARRER LA VM $NAME ? (O/N)"
+    IF ($confirm.TOUPPER() -EQ "O") {
+        TRY {
+            RESTART-VM -NAME $NAME -FORCE -ERRORACTION STOP
+            AFFICHER-MESSAGE "VM $NAME REDEMARREE." "GREEN"
+        } CATCH {
+            AFFICHER-MESSAGE "ERREUR LORS DU REDEMARRAGE DE LA VM : $($_.EXCEPTION.MESSAGE)" "RED"
+        }
+    } ELSE {
+        AFFICHER-MESSAGE "OPERATION ANNULEE." "YELLOW"
+    }
+    PAUSE
+}
+
+function SUPPRIMER-VM {
+    Clear-Host
+    AFFICHER-MESSAGE "VMS DISPONIBLES A SUPPRIMER :" "CYAN"
+    $vms = GET-VM | WHERE-OBJECT { $_.STATE -EQ "OFF" }
+
+    IF ($vms.COUNT -EQ 0) {
+        AFFICHER-MESSAGE "AUCUNE VM N'EST ARRETEE POUR ETRE SUPPRIMEE." "RED"
+        PAUSE
+        RETURN
+    }
+    
+    $donnees_vm = @()
+    for ($i = 0; $i -lt $vms.Count; $i++) {
+        $donnees_vm += [PSCustomObject]@{
+            "NUMERO" = $i+1
+            "NOM" = $vms[$i].NAME
+        }
+    }
+    AFFICHER-TABLEAU @("NUMERO", "NOM") $donnees_vm
+
+    $CHOIX_VM = SAISIR-NOMBRE "NUMERO DE LA VM A SUPPRIMER" 1 $vms.COUNT
+    $NAME = $vms[$CHOIX_VM-1].NAME
+    $confirm = READ-HOST "ETES-VOUS CERTAIN DE VOULOIR SUPPRIMER DEFINITIVEMENT LA VM '$NAME' ET SES DISQUES ? TAPEZ LE NOM DE LA VM POUR CONFIRMER"
+    IF ($confirm -EQ $NAME) {
+        TRY {
+            $vm = GET-VM -NAME $NAME -ERRORACTION STOP
+            $vhdPath = $vm.HARDDRIVES.PATH
+            STOP-VM -NAME $NAME -FORCE
+            REMOVE-VM -NAME $NAME -FORCE -ERRORACTION STOP
+            IF (TEST-PATH $vhdPath) {
+                REMOVE-ITEM -PATH $vhdPath -FORCE
+            }
+            AFFICHER-MESSAGE "VM $NAME ET SON DISQUE SUPPRIMES." "GREEN"
+        } CATCH {
+            AFFICHER-MESSAGE "ERREUR LORS DE LA SUPPRESSION DE LA VM : $($_.EXCEPTION.MESSAGE)" "RED"
+        }
+    } ELSE {
+        AFFICHER-MESSAGE "OPERATION ANNULEE." "YELLOW"
+    }
+    PAUSE
+}
+
+function EXPORTER-VM {
+    Clear-Host
+    AFFICHER-MESSAGE "VMS DISPONIBLES A EXPORTER :" "CYAN"
+    $vms = GET-VM
+    
+    if ($vms.COUNT -EQ 0) {
+        AFFICHER-MESSAGE "AUCUNE VM TROUVEE A EXPORTER." "RED"
+        PAUSE
+        RETURN
+    }
+    
+    $donnees_vm = @()
+    for ($i = 0; $i -lt $vms.Count; $i++) {
+        $donnees_vm += [PSCustomObject]@{
+            "NUMERO" = $i+1
+            "NOM" = $vms[$i].NAME
+        }
+    }
+    AFFICHER-TABLEAU @("NUMERO", "NOM") $donnees_vm
+    $CHOIX_MULTI = SAISIR-CHOIX "VOULEZ-VOUS EXPORTER UNE OU PLUSIEURS VMS ? (U/P)" @("U", "P")
+    $VM_SELECTIONNEES = @()
+    if ($CHOIX_MULTI -eq "U") {
+        $CHOIX_VM = SAISIR-NOMBRE "NUMERO DE LA VM A EXPORTER" 1 $vms.COUNT
+        $VM_SELECTIONNEES += $vms[$CHOIX_VM-1].NAME
+    } else {
+        $CHOIX_NUMEROS = (READ-HOST "NUMEROS DES VMS A EXPORTER (EX: 1,3,5)") -split ','
+        foreach ($numero in $CHOIX_NUMEROS) {
+            $num = [int]$numero
+            if ($num -ge 1 -and $num -le $vms.Count) {
+                $VM_SELECTIONNEES += $vms[$num-1].NAME
+            }
+        }
+    }
+    if ($VM_SELECTIONNEES.Count -eq 0) {
+        AFFICHER-MESSAGE "AUCUNE VM SELECTIONNEE. OPERATION ANNULEE." "YELLOW"
+        PAUSE
+        RETURN
+    }
+
+    $EXPORT_PATH = READ-HOST "CHEMIN de destination pour l'export (EX : C:\EXPORT_VMS)"
+    IF (-NOT (TEST-PATH $EXPORT_PATH)) {
+        NEW-ITEM -PATH $EXPORT_PATH -ITEMTYPE DIRECTORY | OUT-NULL
+    }
+
+    $CHOIX_COMPRESSION = SAISIR-CHOIX "COMPRESSER l'exportation ? (O/N)" @("O", "N")
+    if ($CHOIX_COMPRESSION -eq "O") {
+        AFFICHER-MESSAGE "CHOIX du format de compression :`n1. ZIP`n2. ZPAQ (REQUIERT PEAZIP)"
+        # J'ai mis un message qui ne donne pas de choix pour le .zip pour ne pas faire d'erreur
+        AFFICHER-MESSAGE "Le format ZIP est indisponible. Veuillez choisir 2 pour ZPAQ." "RED"
+        $CHOIX_FORMAT = SAISIR-NOMBRE "VOTRE CHOIX (2)" 2 2
+        
+        $ARCHIVE_FORMAT = "ZPAQ"
+    }
+    
+    foreach ($vmName in $VM_SELECTIONNEES) {
+        $EXPORT_VM_PATH = JOIN-PATH -PATH $EXPORT_PATH -CHILDpath $vmName
+        AFFICHER-MESSAGE "EXPORTATION de $vmName vers $EXPORT_VM_PATH..." "YELLOW"
+        try {
+            if (TEST-PATH $EXPORT_VM_PATH) {
+                AFFICHER-MESSAGE "LE REPERTOIRE D'EXPORTATION EXISTE DEJA. SUPPRESSION..." "YELLOW"
+                REMOVE-ITEM -PATH $EXPORT_VM_PATH -RECURSE -FORCE
+            }
+            
+            EXPORT-VM -NAME $vmName -PATH $EXPORT_VM_PATH -ERRORACTION STOP
+
+            AFFICHER-MESSAGE "EXPORT de $vmName TERMINE !" "GREEN"
+
+            if ($CHOIX_COMPRESSION -eq "O") {
+                try {
+                    if ($ARCHIVE_FORMAT -eq "ZPAQ") {
+                        $peazipPath = "C:\Program Files\PeaZip\peazip.exe"
+                        if (TEST-PATH $peazipPath) {
+                            $cheminArchive = JOIN-PATH -PATH $EXPORT_PATH -CHILDpath "$vmName.zpaq"
+                            & $peazipPath -add "$EXPORT_VM_PATH" "$cheminArchive"
+                            PAUSE
+                        } else {
+                            AFFICHER-MESSAGE "ERREUR : PEAZIP NON TROUVE. Installation requise pour ZPAQ." "RED"
+                        }
+                    }
+                } CATCH {
+                    AFFICHER-MESSAGE "ERREUR LORS de la compression de $vmName : $($_.EXCEPTION.MESSAGE)" "RED"
+                }
+            }
+        } CATCH {
+            AFFICHER-MESSAGE "ERREUR LORS de l'export de la VM $vmName : $($_.EXCEPTION.MESSAGE)" "RED"
+        }
+    }
+    PAUSE
+}
+
+
+function CREER-VM {
+    Clear-Host
+    AFFICHER-MESSAGE "CREATION de MACHINE VIRTUELLE" "CYAN"
+    AFFICHER-MESSAGE "--------------------------" "CYAN"
+    AFFICHER-MESSAGE "ENTREZ LES INFORMATIONS POUR LA VM" "CYAN"
+
+    $NAME = READ-HOST "NOM de la nouvelle VM"
+    $MEMOIRE_GO = SAISIR-NOMBRE "MEMOIRE RAM en GO (4-128)" 4 128
+    $MEMOIRE_BYTES = [long]($MEMOIRE_GO * 1GB)
+    $MIN_CPU = 1
+    $MAX_CPU = [Math]::Min(12, (GET-VMHOST).LOGICALPROCESSORCOUNT)
+    $osInfo = DETECT-TYPEOS $NAME
+    AFFICHER-MESSAGE $osInfo.MSG "CYAN"
+    $CPU = SAISIR-NOMBRE "NOMBRE de coeurs de processeur (entre $MIN_CPU et $MAX_CPU)" $MIN_CPU $MAX_CPU
+    $VHDX_PATH = READ-HOST "CHEMIN COMPLET du disque VHDX (EX : D:\HYPERV\$NAME.VHDX)"
+    $TAILLE_VHDX_GO = SAISIR-NOMBRE "TAILLE du disque VHDX en GO (20-2048)" 20 2048
+    $TAILLE_VHDX_BYTES = [long]($TAILLE_VHDX_GO * 1GB)
+    
+    AFFICHER-MESSAGE "LISTE des switchs virtuels disponibles" "CYAN"
+    $switchs = GET-VMSWITCH | SELECT-OBJECT NAME, SWITCHTYPE
+    IF ($switchs.Count -EQ 0) {
+        AFFICHER-MESSAGE "AUCUN SWITCH VIRTUEL TROUVE. VEUILLEZ EN CREER UN AVANT de continuer." "RED"
+        PAUSE
+        RETURN
+    }
+    $donnees_switch = @()
+    for ($i=0; $i -lt $switchs.Count; $i++) {
+        $donnees_switch += [PSCustomObject]@{
+            "NUMERO" = $i+1
+            "NOM" = $switchs[$i].NAME
+            "TYPE" = $switchs[$i].SWITCHTYPE
+        }
+    }
+    AFFICHER-TABLEAU @("NUMERO", "NOM", "TYPE") $donnees_switch
+    $CHOIX_SWITCH = SAISIR-NOMBRE "NUMERO du switch virtuel" 1 $switchs.Count
+    $SWITCH_NOM = $switchs[$CHOIX_SWITCH-1].NAME
+
+
+    AFFICHER-MESSAGE "VOULEZ-VOUS ATTRIBUER une ISO pour l'installation ?`n1. OUI`n2. NON"
+    $CHOIX_ISO = SAISIR-NOMBRE "VOTRE CHOIX (1-2)" 1 2
+    $ISO_PATH = ""
+    IF ($CHOIX_ISO -EQ 1) {
+        $ISO_PATH = READ-HOST "CHEMIN COMPLET de l'image ISO (EX : C:\ISO\WIN.ISO)"
+        IF (-NOT (TEST-PATH $ISO_PATH)) {
+            AFFICHER-MESSAGE "CHEMIN ISO INVALIDE. LA VM SERA CREE SANS ISO." "YELLOW"
+            $ISO_PATH = ""
+        }
+    }
+
+    $confirm = READ-HOST "CONFIRMER la creation de la VM '$NAME' ? (O/N)"
+    IF ($confirm.TOUPPER() -NE "O") {
+        AFFICHER-MESSAGE "CREATION ANNULEE." "RED"
+        PAUSE
+        RETURN
+    }
+
+    Clear-Host
+    AFFICHER-MESSAGE "CREATION du disque VHDX..." "BLUE"
+    TRY {
+        NEW-VHD -PATH $VHDX_PATH -SIZEBYTES $TAILLE_VHDX_BYTES -DYNAMIC -ERRORACTION STOP
+        AFFICHER-MESSAGE "DISQUE VHDX CREE AVEC SUCCES." "GREEN"
+    } CATCH {
+        AFFICHER-MESSAGE "ERREUR LORS de la creation du disque VHDX : $($_.EXCEPTION.MESSAGE)" "RED"
+        PAUSE
+        RETURN
+    }
+    PAUSE
+
+    Clear-Host
+    AFFICHER-MESSAGE "CREATION de la VM..." "BLUE"
+    TRY {
+        $vm = NEW-VM -NAME $NAME -MEMORYSTARTUPBYTES $MEMOIRE_BYTES -VHDPath $VHDX_PATH -SWITCHNAME $SWITCH_NOM -ERRORACTION STOP
+        SET-VM -NAME $NAME -PROCESSORCOUNT $CPU
+        IF (-NOT [string]::ISNULLORWHITESPACE($ISO_PATH)) {
+            SET-VMDVDDRIVE -VMNAME $NAME -PATH $ISO_PATH
+        }
+        START-VM -NAME $NAME
+        AFFICHER-MESSAGE "VM '$NAME' CREEE ET DEMARREE AVEC SUCCES !" "GREEN"
+    } CATCH {
+    AFFICHER-MESSAGE "ERREUR LORS de la creation de la VM : $($_.EXCEPTION.MESSAGE)" "RED"
+    }
+    PAUSE
+}
+
+function CONFIGURER-VM {
+    Clear-Host
+    AFFICHER-MESSAGE "VMS disponibles a configurer :" "CYAN"
+    $vms = GET-VM
+    IF ($vms.COUNT -EQ 0) {
+        AFFICHER-MESSAGE "AUCUNE VM TROUVEE a configurer." "RED"
+        PAUSE
+        RETURN
+    }
+
+    $donnees_vm = @()
+    for ($i = 0; $i -lt $vms.Count; $i++) {
+        $donnees_vm += [PSCustomObject]@{
+            "NUMERO" = $i+1
+            "NOM" = $vms[$i].NAME
+        }
+    }
+    AFFICHER-TABLEAU @("NUMERO", "NOM") $donnees_vm
+
+    $CHOIX_VM = SAISIR-NOMBRE "NUMERO de la VM a configurer" 1 $vms.COUNT
+    $VMNAME = $vms[$CHOIX_VM-1].NAME
+
     DO {
         Clear-Host
-        Show-Tableau @(
-            "",
-            "MODE MENU AVANCE",
-            "",
-            "1. GESTION DES MACHINES VIRTUELLES",
-            "2. GESTION DES COMMUTATEURS VIRTUELS",
-            "3. GESTION DES SNAPSHOTS",
-            "4. GESTION DU STOCKAGE",
-            "",
-            "R. RAFRAICHIR / RECENTRER LE MENU",
-            "B. RETOUR MENU PRINCIPAL"
-        ) -CouleurBordure "DarkCyan" -CouleurTexte "White"
-        $CHOIX_AVANCE = READ-HOST "VOTRE CHOIX (1-4, R ou B)"
-        SWITCH ($CHOIX_AVANCE.ToUpper()) {
+        AFFICHER-MESSAGE "CONFIGURATION de la VM : $VMNAME" "DARKMAGENTA"
+        AFFICHER-MESSAGE "1. ACTIVER/DESACTIVER la memoire dynamique" "WHITE"
+        AFFICHER-MESSAGE "2. MODIFIER le nombre de coeurs" "WHITE"
+        AFFICHER-MESSAGE "3. MODIFIER la memoire allouee" "WHITE"
+        AFFICHER-MESSAGE "R. RAFRAICHIR / RECENTER le menu" "WHITE"
+        AFFICHER-MESSAGE "B. RETOUR menu gestion VM" "WHITE"
+        $CHOIX = READ-HOST "VOTRE CHOIX (1-3, R ou B)"
+
+        SWITCH ($CHOIX.TOUPPER()) {
             1 {
-                DO {
-                    Clear-Host
-                    Show-Tableau @(
-                        "",
-                        "GESTION DES MACHINES VIRTUELLES",
-                        "",
-                        "1. LISTER LES VMS",
-                        "2. DEMARRER UNE VM",
-                        "3. ARRETER UNE VM",
-                        "4. CREER UNE VM AVANCEE",
-                        "5. SUPPRIMER UNE VM",
-                        "6. EXPORTER UNE VM",
-                        "7. DEPLOYER UNE VM DE STOCK",
-                        "",
-                        "R. RAFRAICHIR / RECENTRER LE MENU",
-                        "B. RETOUR MENU AVANCE"
-                    ) -CouleurBordure "DarkYellow" -CouleurTexte "Gray"
-                    $CHOIX_VM = READ-HOST "VOTRE CHOIX (1-7, R ou B)"
-                    SWITCH ($CHOIX_VM.ToUpper()) {
-                        1 {
-                            Clear-Host
-                            $vms = GET-VM | SELECT-OBJECT NAME, STATE, CPUUSAGE, MEMORYASSIGNED, UPTIME
-                            $lines = @("LISTE DES MACHINES VIRTUELLES :","")
-                            foreach ($vm in $vms) {
-                                $lines += ("{0,-25} | Etat: {1,-10} | CPU: {2,3}% | RAM: {3,6}MB | Uptime: {4}" -f $vm.Name, $vm.State, $vm.CPUUsage, $vm.MemoryAssigned, $vm.Uptime)
-                            }
-                            Show-Tableau $lines -CouleurBordure "Cyan" -CouleurTexte "White"
-                        }
-                        2 {
-                            $NAME = READ-HOST "NOM DE LA VM A DEMARRER"
-                            START-VM -NAME $NAME
-                            Clear-Host
-                            Show-Tableau @("VM $NAME DEMARREE.") -CouleurBordure "Green"
-                        }
-                        3 {
-                            $NAME = READ-HOST "NOM DE LA VM A ARRETER"
-                            STOP-VM -NAME $NAME
-                            Clear-Host
-                            Show-Tableau @("VM $NAME ARRETEE.") -CouleurBordure "Green"
-                        }
-                        4 {
-                            DO {
-                                Clear-Host
-                                Show-Tableau @(
-                                    "",
-                                    "CREATION VM AVANCEE",
-                                    "",
-                                    "1. CREER UNE SEULE VM AVEC ISO",
-                                    "2. CREER PLUSIEURS VMS D'UN COUP AVEC ISO",
-                                    "3. CREER UNE VM DE TEST (SANS ISO)",
-                                    "4. CREER UNE VM VIDE (SANS ISO NI VHDX)",
-                                    "",
-                                    "R. RAFRAICHIR / RECENTRER LE MENU",
-                                    "B. RETOUR"
-                                ) -CouleurBordure "DarkGreen" -CouleurTexte "White"
-                                $choix_create = READ-HOST "VOTRE CHOIX (1-4, R ou B)"
-                                SWITCH ($choix_create.ToUpper()) {
-                                    1 {
-                                        $NAME = READ-HOST "NOM DE LA NOUVELLE VM"
-                                        $RAMGO = Saisir-Nombre "MEMOIRE RAM EN GO (EX : 4)"
-                                        $MEMORY = [long]($RAMGO * 1GB)
-                                        $CPU = Saisir-Nombre "NOMBRE DE COEURS DE PROCESSEUR (EX : 2)"
-                                        $VHDX = READ-HOST "CHEMIN DU DISQUE VHDX (EX : D:\HYPERV\$NAME.VHDX)"
-                                        $SWITCH = READ-HOST "NOM DU SWITCH VIRTUEL"
-                                        IF (-NOT (TEST-PATH $VHDX)) {
-                                            $TAILLE_VHDX = Saisir-Nombre "TAILLE DU DISQUE VHDX EN GO (EX : 60)"
-                                            $TAILLE_VHDX_BYTES = [long]($TAILLE_VHDX * 1GB)
-                                            NEW-VHD -PATH $VHDX -SIZEBYTES $TAILLE_VHDX_BYTES -DYNAMIC
-                                            Clear-Host
-                                            Show-Tableau @("DISQUE $VHDX CREE.") -CouleurBordure "Green"
-                                        }
-                                        Show-Tableau @("CHEMIN ISO UTILISE : $CHEMIN_ISO_DEFAUT") -CouleurBordure "Blue"
-                                        TRY {
-                                            $vm = NEW-VM -NAME $NAME -MEMORYSTARTUPBYTES $MEMORY -SWITCHNAME $SWITCH -VHDPATH $VHDX -ERRORACTION STOP
-                                            IF ($vm) {
-                                                SET-VM -NAME $NAME -PROCESSORCOUNT $CPU
-                                                SET-VMDVDDRIVE -VMNAME $NAME -PATH $CHEMIN_ISO_DEFAUT
-                                                START-VM -NAME $NAME
-                                                Clear-Host
-                                                Show-Tableau @("VM $NAME CREEE ET DEMARREE.") -CouleurBordure "Green"
-                                            }
-                                        } CATCH {
-                                            Clear-Host
-                                            Show-Tableau @("ERREUR LORS DE LA CREATION DE LA VM : $($_.Exception.Message)") -CouleurBordure "Red"
-                                        }
-                                    }
-                                    2 {
-                                        $NB = Saisir-Nombre "NOMBRE DE VMS A CREER (EX : 2)"
-                                        $PREFIX = READ-HOST "PREFIXE POUR LES NOMS DE VM (EX : TESTVM)"
-                                        $RAMGO = Saisir-Nombre "MEMOIRE RAM EN GO (EX : 4)"
-                                        $MEMORY = [long]($RAMGO * 1GB)
-                                        $CPU = Saisir-Nombre "NOMBRE DE COEURS DE PROCESSEUR (EX : 2)"
-                                        $VHDX_PATH = READ-HOST "CHEMIN DOSSIER VHDX (EX : D:\HYPERV)"
-                                        $SWITCH = READ-HOST "NOM DU SWITCH VIRTUEL"
-                                        $TAILLE_VHDX = Saisir-Nombre "TAILLE DU DISQUE VHDX EN GO (EX : 60)"
-                                        $TAILLE_VHDX_BYTES = [long]($TAILLE_VHDX * 1GB)
-                                        Show-Tableau @("CHEMIN ISO UTILISE : $CHEMIN_ISO_DEFAUT") -CouleurBordure "Blue"
-                                        FOR ($i = 1; $i -le $NB; $i++) {
-                                            $VMNAME = "$PREFIX$i"
-                                            $VHDX = "$VHDX_PATH\$VMNAME.VHDX"
-                                            IF (-NOT (TEST-PATH $VHDX)) {
-                                                NEW-VHD -PATH $VHDX -SIZEBYTES $TAILLE_VHDX_BYTES -DYNAMIC
-                                                Clear-Host
-                                                Show-Tableau @("DISQUE $VHDX CREE.") -CouleurBordure "Green"
-                                            }
-                                            TRY {
-                                                $vm = NEW-VM -NAME $VMNAME -MEMORYSTARTUPBYTES $MEMORY -SWITCHNAME $SWITCH -VHDPATH $VHDX -ERRORACTION STOP
-                                                IF ($vm) {
-                                                    SET-VM -NAME $VMNAME -PROCESSORCOUNT $CPU
-                                                    SET-VMDVDDRIVE -VMNAME $VMNAME -PATH $CHEMIN_ISO_DEFAUT
-                                                    START-VM -NAME $VMNAME
-                                                    Clear-Host
-                                                    Show-Tableau @("VM $VMNAME CREEE ET DEMARREE.") -CouleurBordure "Green"
-                                                }
-                                            } CATCH {
-                                                Clear-Host
-                                                Show-Tableau @("ERREUR LORS DE LA CREATION DE LA VM $VMNAME : $($_.Exception.Message)") -CouleurBordure "Red"
-                                            }
-                                        }
-                                    }
-                                    3 {
-                                        $NAME = READ-HOST "NOM DE LA VM DE TEST"
-                                        $RAMGO = Saisir-Nombre "MEMOIRE RAM EN GO (EX : 4)"
-                                        $MEMORY = [long]($RAMGO * 1GB)
-                                        $CPU = Saisir-Nombre "NOMBRE DE COEURS DE PROCESSEUR (EX : 2)"
-                                        $VHDX = READ-HOST "CHEMIN DU DISQUE VHDX (EX : D:\HYPERV\$NAME.VHDX)"
-                                        $SWITCH = READ-HOST "NOM DU SWITCH VIRTUEL"
-                                        IF (-NOT (TEST-PATH $VHDX)) {
-                                            $TAILLE_VHDX = Saisir-Nombre "TAILLE DU DISQUE VHDX EN GO (EX : 60)"
-                                            $TAILLE_VHDX_BYTES = [long]($TAILLE_VHDX * 1GB)
-                                            NEW-VHD -PATH $VHDX -SIZEBYTES $TAILLE_VHDX_BYTES -DYNAMIC
-                                            Clear-Host
-                                            Show-Tableau @("DISQUE $VHDX CREE.") -CouleurBordure "Green"
-                                        }
-                                        TRY {
-                                            $vm = NEW-VM -NAME $NAME -MEMORYSTARTUPBYTES $MEMORY -SWITCHNAME $SWITCH -VHDPATH $VHDX -ERRORACTION STOP
-                                            IF ($vm) {
-                                                SET-VM -NAME $NAME -PROCESSORCOUNT $CPU
-                                                START-VM -NAME $NAME
-                                                Clear-Host
-                                                Show-Tableau @("VM $NAME CREEE ET DEMARREE SANS ISO.") -CouleurBordure "Green"
-                                            }
-                                        } CATCH {
-                                            Clear-Host
-                                            Show-Tableau @("ERREUR LORS DE LA CREATION DE LA VM : $($_.Exception.Message)") -CouleurBordure "Red"
-                                        }
-                                    }
-                                    4 {
-                                        $NAME = READ-HOST "NOM DE LA VM VIDE"
-                                        $RAMGO = Saisir-Nombre "MEMOIRE RAM EN GO (EX : 4)"
-                                        $MEMORY = [long]($RAMGO * 1GB)
-                                        $CPU = Saisir-Nombre "NOMBRE DE COEURS DE PROCESSEUR (EX : 2)"
-                                        $SWITCH = READ-HOST "NOM DU SWITCH VIRTUEL"
-                                        TRY {
-                                            $vm = NEW-VM -NAME $NAME -MEMORYSTARTUPBYTES $MEMORY -SWITCHNAME $SWITCH -ERRORACTION STOP
-                                            IF ($vm) {
-                                                SET-VM -NAME $NAME -PROCESSORCOUNT $CPU
-                                                START-VM -NAME $NAME
-                                                Clear-Host
-                                                Show-Tableau @("VM $NAME CREEE ET DEMARREE SANS ISO NI VHDX.") -CouleurBordure "Green"
-                                            }
-                                        } CATCH {
-                                            Clear-Host
-                                            Show-Tableau @("ERREUR LORS DE LA CREATION DE LA VM : $($_.Exception.Message)") -CouleurBordure "Red"
-                                        }
-                                    }
-                                    "B" { Clear-Host; Show-Tableau @("RETOUR") -CouleurBordure "Magenta" }
-                                    "R" { CONTINUE }
-                                    DEFAULT { Clear-Host; Show-Tableau @("CHOIX INVALIDE") -CouleurBordure "Red" }
-                                }
-                                IF ($choix_create.ToUpper() -NE "B" -and $choix_create.ToUpper() -NE "R") { PAUSE }
-                            } WHILE ($choix_create.ToUpper() -NE "B")
-                        }
-                        5 {
-                            $NAME = READ-HOST "NOM DE LA VM A SUPPRIMER"
-                            STOP-VM -NAME $NAME -FORCE
-                            REMOVE-VM -NAME $NAME -FORCE
-                            Clear-Host
-                            Show-Tableau @("VM $NAME SUPPRIMEE.") -CouleurBordure "Green"
-                        }
-                        6 {
-                            $NAME = READ-HOST "NOM DE LA VM A EXPORTER"
-                            $EXPORT_PATH = READ-HOST "CHEMIN DE DESTINATION POUR L'EXPORT (EX : D:\STOCK_VMS\$NAME)"
-                            Export-VM-AvcProgress $NAME $EXPORT_PATH
-                        }
-                        7 {
-                            Clear-Host
-                            $STOCK_PATH = READ-HOST "CHEMIN DU DOSSIER DE STOCKAGE DES VMS PRETES (EX : D:\STOCK_VMS)"
-                            $VM_LIST = GET-CHILDITEM -PATH $STOCK_PATH -DIRECTORY | SELECT-OBJECT -EXPAND NAME
-                            if ($VM_LIST.Count -eq 0) {
-                                Show-Tableau @("AUCUNE VM EN STOCK TROUVEE.") -CouleurBordure "Red"
-                            } else {
-                                $lines = @("VMS DISPONIBLES EN STOCK :")
-                                for ($i = 0; $i -lt $VM_LIST.Count; $i++) {
-                                    $lines += ("{0,2}. {1}" -f ($i+1), $VM_LIST[$i])
-                                }
-                                Show-Tableau $lines -CouleurBordure "Yellow" -CouleurTexte "White"
-                                DO {
-                                    $CHOIX_STOCK = Saisir-Nombre "NUMERO DE LA VM A DEPLOYER"
-                                } WHILE ($CHOIX_STOCK -lt 1 -OR $CHOIX_STOCK -gt $VM_LIST.Count)
-                                $VM_TO_COPY = $VM_LIST[$CHOIX_STOCK-1]
-                                $SRC_PATH = "$STOCK_PATH\$VM_TO_COPY"
-                                $DEST_PARENT = READ-HOST "DOSSIER DE DESTINATION (EX : D:\HYPERV)"
-                                $DEST_FINAL = Copy-VM-AvcProgress $SRC_PATH $DEST_PARENT
-                                IF (-NOT $DEST_FINAL) { BREAK }
-                                $CONFIG_PATH = Get-ChildItem -Path $DEST_FINAL -Recurse -Include *.vmcx,*.xml -ErrorAction SilentlyContinue | Select-Object -First 1
-                                IF ($CONFIG_PATH) {
-                                    Show-Tableau @("FICHIER DE CONFIGURATION TROUVE : $($CONFIG_PATH.FullName)") -CouleurBordure "Blue"
-                                    Barre-ProgressSimulee "IMPORTATION EN COURS"
-                                    $DEST_VM = READ-HOST "DOSSIER DE CONFIGURATION DE LA VM"
-                                    $DEST_CP = READ-HOST "DOSSIER DES POINTS DE CONTROLE"
-                                    $DEST_SP = READ-HOST "DOSSIER DE PAGINATION INTELLIGENTE"
-                                    $DEST_VHD = READ-HOST "DOSSIER DES VHDX"
-                                    TRY {
-                                        $IMPORTED_VM = Import-VM -Path $CONFIG_PATH.FullName `
-                                            -Copy `
-                                            -GenerateNewId `
-                                            -VirtualMachinePath $DEST_VM `
-                                            -SnapshotFilePath $DEST_CP `
-                                            -SmartPagingFilePath $DEST_SP `
-                                            -VhdDestinationPath $DEST_VHD -ErrorAction Stop
-                                        Clear-Host
-                                        Show-Tableau @("IMPORT TERMINE !") -CouleurBordure "Green"
-                                        $VMS = @()
-                                        IF ($IMPORTED_VM -is [System.Collections.IEnumerable]) {
-                                            $VMS = $IMPORTED_VM
-                                        } ELSE {
-                                            $VMS = @($IMPORTED_VM)
-                                        }
-                                        foreach ($VM in $VMS) {
-                                            $VMNAME = $VM.Name
-                                            $MIN_CPU = 1
-                                            $MAX_CPU = [Math]::Min(12, (Get-VMHost).LogicalProcessorCount)
-                                            $osInfo = Detect-TypeOS $VMNAME
-                                            $CPU_AUTO = $osInfo.cpu
-                                            Show-Tableau @($osInfo.msg) -CouleurBordure "Cyan"
-                                            DO {
-                                                $CPU_INPUT = Read-Host "NOMBRE DE COEURS DE PROCESSEUR POUR $VMNAME (ENTRE $MIN_CPU ET $MAX_CPU) [`$CPU_AUTO` par defaut]"
-                                                if ([string]::IsNullOrWhiteSpace($CPU_INPUT)) {
-                                                    $CPU = $CPU_AUTO
-                                                } elseif ($CPU_INPUT -match '^\d+$' -and [int]$CPU_INPUT -ge $MIN_CPU -and [int]$CPU_INPUT -le $MAX_CPU) {
-                                                    $CPU = [int]$CPU_INPUT
-                                                } else {
-                                                    Show-Tableau @("NOMBRE DE COEURS INVALIDE. ENTREE IGNORÉE.") -CouleurBordure "Red"
-                                                    $CPU = $null
-                                                }
-                                            } while ($CPU -eq $null)
-                                            Set-VMProcessor -VMName $VMNAME -Count $CPU
-                                            $NICs = Get-VMNetworkAdapter -VMName $VMNAME
-                                            foreach ($NIC in $NICs) {
-                                                $DEFAULT_COM = $NIC.SwitchName
-                                                $COM = Read-Host "NOM DU COMMUTATEUR (VIRTUAL SWITCH) POUR LA CARTE RESEAU '$($NIC.Name)' (par defaut : $DEFAULT_COM)"
-                                                if ([string]::IsNullOrWhiteSpace($COM)) { $COM = $DEFAULT_COM }
-                                                if (-not (Get-VMSwitch | Where-Object {$_.Name -eq $COM})) {
-                                                    Show-Tableau @("COMMUTATEUR '$COM' INEXISTANT.") -CouleurBordure "Red"
-                                                    $TYPE = Read-Host "TYPE POUR $COM (EXTERNAL/INTERNAL/PRIVATE)"
-                                                    if ($TYPE -eq "EXTERNAL") {
-                                                        $adapters = GET-NETADAPTER | WHERE-OBJECT {$_.STATUS -EQ "UP"}
-                                                        $aList = @("ADAPTATEURS DISPONIBLES :")
-                                                        foreach ($a in $adapters) { $aList += ("- {0}" -f $a.Name) }
-                                                        Show-Tableau $aList -CouleurBordure "Cyan" -CouleurTexte "White"
-                                                        $adapter = Read-Host "NOM DE L'ADAPTATEUR POUR L'EXTERNAL"
-                                                        NEW-VMSWITCH -NAME $COM -NETADAPTERNAME $adapter -ALLOWMANAGEMENTOS $TRUE
-                                                    } elseif ($TYPE -eq "INTERNAL" -or $TYPE -eq "PRIVATE") {
-                                                        NEW-VMSWITCH -NAME $COM -SWITCHTYPE $TYPE
-                                                    } else {
-                                                        Show-Tableau @("TYPE NON VALIDE, COMMUTATEUR NON CREE.") -CouleurBordure "Red"
-                                                    }
-                                                }
-                                                Connect-VMNetworkAdapter -VMName $VMNAME -SwitchName $COM
-                                            }
-                                            $RAMGO = Saisir-Nombre "MEMOIRE RAM EN GO POUR $VMNAME (EX : 4)"
-                                            $MEMORY = [long]($RAMGO * 1GB)
-                                            Set-VM -Name $VMNAME -MemoryStartupBytes $MEMORY
-                                            Show-Tableau @("VM $VMNAME CONFIGUREE AVEC $CPU COEURS, $RAMGO GO RAM, ET COMMUTATEUR RESEAU ($COM) OK.") -CouleurBordure "Green"
-                                        }
-                                    } CATCH {
-                                        Clear-Host
-                                        Show-Tableau @("ERREUR LORS DE L'IMPORT DE LA VM : $($_.Exception.Message)") -CouleurBordure "Red"
-                                    }
-                                } ELSE {
-                                    Clear-Host
-                                    Show-Tableau @("ERREUR : AUCUN FICHIER DE CONFIGURATION (.VMCX OU .XML) TROUVE DANS $DEST_FINAL") -CouleurBordure "Red"
-                                }
-                            }
-                            PAUSE
-                        }
-                        "B" { Clear-Host; Show-Tableau @("RETOUR MENU AVANCE") -CouleurBordure "Magenta" }
-                        "R" { CONTINUE }
-                        DEFAULT { Clear-Host; Show-Tableau @("CHOIX INVALIDE") -CouleurBordure "Red" }
-                    }
-                    IF ($CHOIX_VM.ToUpper() -NE "B" -and $CHOIX_VM.ToUpper() -NE "R") { PAUSE }
-                } WHILE ($CHOIX_VM.ToUpper() -NE "B")
+                TRY {
+                    $VM = GET-VM -NAME $VMNAME -ERRORACTION STOP
+                    $currentStatus = $VM.DYNAMICMEMORYENABLED
+                    $newStatus = if ($currentStatus) { $false } else { $true }
+                    SET-VMMEMORY -VM $VM -DYNAMICMEMORYENABLED $newStatus -ERRORACTION STOP
+                    AFFICHER-MESSAGE "MEMOIRE dynamique de '$VMNAME' changee de $currentStatus a $newStatus." "GREEN"
+                } CATCH {
+                    AFFICHER-MESSAGE "ERREUR LORS de la modification de la memoire dynamique : $($_.EXCEPTION.MESSAGE)" "RED"
+                }
+                PAUSE
             }
             2 {
-                DO {
-                    Clear-Host
-                    Show-Tableau @(
-                        "",
-                        "GESTION COMMUTATEUR HYPER-V",
-                        "",
-                        "1. LISTER LES COMMUTATEURS",
-                        "2. CREER UN COMMUTATEUR",
-                        "3. SUPPRIMER UN COMMUTATEUR",
-                        "",
-                        "R. RAFRAICHIR / RECENTRER LE MENU",
-                        "B. RETOUR MENU AVANCE"
-                    ) -CouleurBordure "DarkMagenta" -CouleurTexte "Gray"
-                    $CHOIXC = READ-HOST "VOTRE CHOIX (1-3, R ou B)"
-                    SWITCH ($CHOIXC.ToUpper()) {
-                        1 {
-                            Clear-Host
-                            $switchs = GET-VMSWITCH | SELECT-OBJECT NAME, SWITCHTYPE
-                            $lines = @("LISTE DES COMMUTATEURS HYPER-V :","")
-                            foreach ($s in $switchs) {
-                                $lines += ("{0,-30} | Type: {1,-10}" -f $s.Name, $s.SwitchType)
-                            }
-                            Show-Tableau $lines -CouleurBordure "Cyan" -CouleurTexte "White"
-                        }
-                        2 {
-                            $NOMC = READ-HOST "NOM DU COMMUTATEUR (EX : COM_LAN_PRENOM)"
-                            $TYPE = READ-HOST "TYPE (EXTERNAL, INTERNAL, PRIVATE)"
-                            IF ($TYPE -EQ "EXTERNAL") {
-                                $ADAPTERS = GET-NETADAPTER | WHERE-OBJECT {$_.STATUS -EQ "UP"}
-                                $aList = @("ADAPTATEURS DISPONIBLES :")
-                                foreach ($a in $ADAPTERS) {
-                                    $aList += ("- {0}" -f $a.Name)
-                                }
-                                Show-Tableau $aList -CouleurBordure "Cyan" -CouleurTexte "White"
-                                $ADAPTER = READ-HOST "NOM DE L'ADAPTATEUR RESEAU POUR L'EXTERNAL (EX : ETHERNET)"
-                                NEW-VMSWITCH -NAME $NOMC -NETADAPTERNAME $ADAPTER -ALLOWMANAGEMENTOS $TRUE
-                            } ELSEIF ($TYPE -EQ "INTERNAL" -OR $TYPE -EQ "PRIVATE") {
-                                NEW-VMSWITCH -NAME $NOMC -SWITCHTYPE $TYPE
-                            } ELSE {
-                                Clear-Host
-                                Show-Tableau @("TYPE NON VALIDE") -CouleurBordure "Red"
-                            }
-                        }
-                        3 {
-                            $NOMC = READ-HOST "NOM DU COMMUTATEUR A SUPPRIMER"
-                            REMOVE-VMSWITCH -NAME $NOMC -FORCE
-                            Clear-Host
-                            Show-Tableau @("COMMUTATEUR $NOMC SUPPRIME") -CouleurBordure "Green"
-                        }
-                        "B" { Clear-Host; Show-Tableau @("RETOUR MENU AVANCE") -CouleurBordure "Magenta" }
-                        "R" { CONTINUE }
-                        DEFAULT { Clear-Host; Show-Tableau @("CHOIX INVALIDE") -CouleurBordure "Red" }
-                    }
-                    IF ($CHOIXC.ToUpper() -NE "B" -and $CHOIXC.ToUpper() -NE "R") { PAUSE }
-                } WHILE ($CHOIXC.ToUpper() -NE "B")
+                TRY {
+                    $VM = GET-VM -NAME $VMNAME -ERRORACTION STOP
+                    $MIN_CPU = 1
+                    $MAX_CPU = [Math]::Min(12, (GET-VMHOST).LOGICALPROCESSORCOUNT)
+                    $currentCPU = $VM.PROCESSORCOUNT
+                    $NEW_CPU = SAISIR-NOMBRE "ENTREZ le nouveau nombre de coeurs (ACTUEL: $currentCPU)" $MIN_CPU $MAX_CPU
+                    SET-VM -NAME $VMNAME -PROCESSORCOUNT $NEW_CPU -ERRORACTION STOP
+                    AFFICHER-MESSAGE "NOMBRE de coeurs de '$VMNAME' change a $NEW_CPU." "GREEN"
+                } CATCH {
+                    AFFICHER-MESSAGE "ERREUR LORS de la modification des coeurs : $($_.EXCEPTION.MESSAGE)" "RED"
+                }
+                PAUSE
             }
             3 {
-                DO {
-                    Clear-Host
-                    Show-Tableau @(
-                        "",
-                        "GESTION DES SNAPSHOTS (CHECKPOINTS)",
-                        "",
-                        "1. LISTER LES CHECKPOINTS",
-                        "2. CREER UN CHECKPOINT",
-                        "3. RESTAURER UN CHECKPOINT",
-                        "4. SUPPRIMER UN CHECKPOINT",
-                        "",
-                        "R. RAFRAICHIR / RECENTRER LE MENU",
-                        "B. RETOUR MENU AVANCE"
-                    ) -CouleurBordure "DarkBlue" -CouleurTexte "White"
-                    $CHOIX_SNAP = READ-HOST "VOTRE CHOIX (1-4, R ou B)"
-                    SWITCH ($CHOIX_SNAP.ToUpper()) {
-                        1 {
-                            $VMNAME = READ-HOST "NOM DE LA VM"
-                            $cps = GET-VMCHECKPOINT -VMNAME $VMNAME | SELECT-OBJECT NAME, CREATETIME
-                            $lines = @("LISTE DES CHECKPOINTS DE $VMNAME :","")
-                            foreach ($cp in $cps) {
-                                $lines += ("{0,-25} | Créé le: {1}" -f $cp.Name, $cp.CreationTime)
-                            }
-                            Clear-Host
-                            Show-Tableau $lines -CouleurBordure "Cyan" -CouleurTexte "White"
-                        }
-                        2 {
-                            $VMNAME = READ-HOST "NOM DE LA VM"
-                            $CPNAME = READ-HOST "NOM DU CHECKPOINT"
-                            CHECKPOINT-VM -VMNAME $VMNAME -SNAPSHOTNAME $CPNAME
-                            Clear-Host
-                            Show-Tableau @("CHECKPOINT $CPNAME CREE SUR $VMNAME") -CouleurBordure "Green"
-                        }
-                        3 {
-                            $VMNAME = READ-HOST "NOM DE LA VM"
-                            $CPNAME = READ-HOST "NOM DU CHECKPOINT"
-                            RESTORE-VMCHECKPOINT -VMNAME $VMNAME -NAME $CPNAME
-                            Clear-Host
-                            Show-Tableau @("CHECKPOINT $CPNAME RESTAURE SUR $VMNAME") -CouleurBordure "Green"
-                        }
-                        4 {
-                            $VMNAME = READ-HOST "NOM DE LA VM"
-                            $CPNAME = READ-HOST "NOM DU CHECKPOINT"
-                            REMOVE-VMCHECKPOINT -VMNAME $VMNAME -NAME $CPNAME
-                            Clear-Host
-                            Show-Tableau @("CHECKPOINT $CPNAME SUPPRIME DE $VMNAME") -CouleurBordure "Green"
-                        }
-                        "B" { Clear-Host; Show-Tableau @("RETOUR MENU AVANCE") -CouleurBordure "Magenta" }
-                        "R" { CONTINUE }
-                        DEFAULT { Clear-Host; Show-Tableau @("CHOIX INVALIDE") -CouleurBordure "Red" }
+                TRY {
+                    $VM = GET-VM -NAME $VMNAME -ERRORACTION STOP
+                    $currentMemGB = $VM.MEMORYSTARTUP / 1GB
+                    $NEW_MEM_GO = SAISIR-NOMBRE "ENTREZ la nouvelle memoire en GO (ACTUEL: $currentMemGB)" 4 128
+                    $NEW_MEM_BYTES = [long]($NEW_MEM_GO * 1GB)
+                    
+                    if ($VM.VERSION -like "10.0") { # VM Generation 1
+                        SET-VMMEMORY -VM $VM -STARTUPBYTES $NEW_MEM_BYTES -ERRORACTION STOP
+                    } else { # VM Generation 2
+                        SET-VMMEMORY -VM $VM -MEMORYSTARTUPBYTES $NEW_MEM_BYTES -ERRORACTION STOP
                     }
-                    IF ($CHOIX_SNAP.ToUpper() -NE "B" -and $CHOIX_SNAP.ToUpper() -NE "R") { PAUSE }
-                } WHILE ($CHOIX_SNAP.ToUpper() -NE "B")
+                    AFFICHER-MESSAGE "MEMOIRE de '$VMNAME' changee a $NEW_MEM_GO GO." "GREEN"
+                } CATCH {
+                    AFFICHER-MESSAGE "ERREUR LORS de la modification de la memoire : $($_.EXCEPTION.MESSAGE)" "RED"
+                }
+                PAUSE
             }
-            4 {
-                DO {
-                    Clear-Host
-                    Show-Tableau @(
-                        "",
-                        "GESTION DU STOCKAGE",
-                        "",
-                        "1. LISTER LES DISQUES DURS VIRTUELS",
-                        "2. CREER UN VHDX",
-                        "3. SUPPRIMER UN VHDX",
-                        "",
-                        "R. RAFRAICHIR / RECENTRER LE MENU",
-                        "B. RETOUR MENU AVANCE"
-                    ) -CouleurBordure "DarkRed" -CouleurTexte "Yellow"
-                    $CHOIX_DISK = READ-HOST "VOTRE CHOIX (1-3, R ou B)"
-                    SWITCH ($CHOIX_DISK.ToUpper()) {
-                        1 {
-                            $vhdx = GET-VHD | SELECT-OBJECT PATH, VIRTUALSIZEMB, FILESIZE, ATTACHED
-                            $lines = @("LISTE DES DISQUES DURS VIRTUELS :","")
-                            foreach ($v in $vhdx) {
-                                $lines += ("{0,-50} | Taille: {1,8}MB | Taille fichier: {2,8} | Attaché: {3}" -f $v.Path, $v.VirtualSizeMB, $v.FileSize, $v.Attached)
-                            }
-                            Clear-Host
-                            Show-Tableau $lines -CouleurBordure "Cyan" -CouleurTexte "White"
-                        }
-                        2 {
-                            $PATH = READ-HOST "CHEMIN DU NOUVEAU VHDX"
-                            $SIZE = Saisir-Nombre "TAILLE (MB, EX : 40960)"
-                            $SIZE_BYTES = [long]($SIZE * 1MB)
-                            NEW-VHD -PATH $PATH -SIZEBYTES $SIZE_BYTES -DYNAMIC
-                            Clear-Host
-                            Show-Tableau @("DISQUE $PATH CREE.") -CouleurBordure "Green"
-                        }
-                        3 {
-                            $PATH = READ-HOST "CHEMIN DU VHDX A SUPPRIMER"
-                            REMOVE-ITEM $PATH
-                            Clear-Host
-                            Show-Tableau @("DISQUE $PATH SUPPRIME.") -CouleurBordure "Green"
-                        }
-                        "B" { Clear-Host; Show-Tableau @("RETOUR MENU AVANCE") -CouleurBordure "Magenta" }
-                        "R" { CONTINUE }
-                        DEFAULT { Clear-Host; Show-Tableau @("CHOIX INVALIDE") -CouleurBordure "Red" }
-                    }
-                    IF ($CHOIX_DISK.ToUpper() -NE "B" -and $CHOIX_DISK.ToUpper() -NE "R") { PAUSE }
-                } WHILE ($CHOIX_DISK.ToUpper() -NE "B")
-            }
-            "B" { Clear-Host; Show-Tableau @("RETOUR MENU PRINCIPAL") -CouleurBordure "Magenta" }
+            "B" { RETURN }
             "R" { CONTINUE }
-            DEFAULT { Clear-Host; Show-Tableau @("CHOIX INVALIDE") -CouleurBordure "Red" }
+            DEFAULT { AFFICHER-MESSAGE "CHOIX INVALIDE" "RED"; PAUSE }
         }
-        IF ($CHOIX_AVANCE.ToUpper() -NE "B" -and $CHOIX_AVANCE.ToUpper() -NE "R") { PAUSE }
-    } WHILE ($CHOIX_AVANCE.ToUpper() -NE "B")
+    } WHILE ($TRUE)
 }
 
-# ========== BOUCLE PRINCIPALE ==========
-DO {
-    Afficher-MenuDepart
-    $CHOIX_DEPART = READ-HOST "VOTRE CHOIX (1, R ou Q)"
-    SWITCH ($CHOIX_DEPART.ToUpper()) {
-        1 { MENU_AVANCE }
-        "Q" { Clear-Host; Show-Tableau @("FIN DU SCRIPT.") -CouleurBordure "Green" }
-        "R" { CONTINUE }
-        DEFAULT { Clear-Host; Show-Tableau @("CHOIX INVALIDE") -CouleurBordure "Red" }
+# --- GESTION DES COMMUTATEURS ---
+function LISTER-COMMUTATEUR {
+    Clear-Host
+    AFFICHER-MESSAGE "LISTE des commutateurs Hyper-V :" "CYAN"
+    $switchs = GET-VMSWITCH | SELECT-OBJECT NAME, SWITCHTYPE
+    IF (-NOT $switchs) {
+        AFFICHER-MESSAGE "AUCUN COMMUTATEUR TROUVE." "RED"
+    } ELSE {
+        $donnees_switch = @()
+        foreach ($switch in $switchs) {
+            $donnees_switch += [PSCustomObject]@{
+                NOM = $switch.NAME
+                TYPE = $switch.SWITCHTYPE
+            }
+        }
+        $entetes_switch = "NOM", "TYPE"
+        AFFICHER-TABLEAU $entetes_switch $donnees_switch
     }
-} WHILE ($CHOIX_DEPART.ToUpper() -NE "Q")
+    PAUSE
+}
+
+function CREER-COMMUTATEUR {
+    Clear-Host
+    $NOMC = READ-HOST "NOM du commutateur (EX : COM_LAN_PRENOM)"
+    $TYPE = SAISIR-CHOIX "TYPE (EXTERNAL, INTERNAL, PRIVATE)" @("EXTERNAL", "INTERNAL", "PRIVATE")
+
+    TRY {
+        IF ($TYPE -EQ "EXTERNAL") {
+            $ADAPTERS = GET-NETADAPTER | WHERE-OBJECT {$_.STATUS -EQ "UP"} | SELECT-OBJECT -EXPAND NAME
+            AFFICHER-MESSAGE "ADAPTATEURS disponibles :" "CYAN"
+            $donnees_adapt = @()
+            for ($i=0; $i -lt $ADAPTERS.Count; $i++) {
+                $donnees_adapt += [PSCustomObject]@{
+                    "NUMERO" = $i+1
+                    "NOM" = $ADAPTERS[$i]
+                }
+            }
+            AFFICHER-TABLEAU @("NUMERO", "NOM") $donnees_adapt
+            $CHOIX_ADAPTER = SAISIR-NOMBRE "NUMERO de l'adaptateur reseau pour l'external" 1 $ADAPTERS.COUNT
+            $ADAPTER = $ADAPTERS[$CHOIX_ADAPTER-1]
+            NEW-VMSWITCH -NAME $NOMC -NETADAPTERNAME $ADAPTER -ALLOWMANAGEMENTOS $TRUE -ERRORACTION STOP
+        } ELSE {
+            NEW-VMSWITCH -NAME $NOMC -SWITCHTYPE $TYPE -ERRORACTION STOP
+        }
+        AFFICHER-MESSAGE "COMMUTATEUR $NOMC CREE." "GREEN"
+    } CATCH {
+        AFFICHER-MESSAGE "ERREUR LORS de la creation du commutateur : $($_.EXCEPTION.MESSAGE)" "RED"
+    }
+    PAUSE
+}
+
+function SUPPRIMER-COMMUTATEUR {
+    Clear-Host
+    $switchs = GET-VMSWITCH
+    IF ($switchs.Count -EQ 0) {
+        AFFICHER-MESSAGE "AUCUN COMMUTATEUR TROUVE." "RED"
+        PAUSE
+        RETURN
+    }
+    AFFICHER-MESSAGE "COMMUTATEURS disponibles a supprimer :" "CYAN"
+    $donnees_switch = @()
+    for ($i=0; $i -lt $switchs.Count; $i++) {
+        $donnees_switch += [PSCustomObject]@{
+            "NUMERO" = $i+1
+            "NOM" = $switchs[$i].NAME
+        }
+    }
+    AFFICHER-TABLEAU @("NUMERO", "NOM") $donnees_switch
+    
+    $CHOIX_COMM = SAISIR-NOMBRE "NUMERO du commutateur a supprimer" 1 $switchs.Count
+    $NOMC = $switchs[$CHOIX_COMM-1].Name
+    $confirm = READ-HOST "ETES-VOUS CERTAIN de vouloir supprimer le commutateur '$NOMC' ? TAPEZ le nom pour confirmer"
+    IF ($confirm -EQ $NOMC) {
+        TRY {
+            REMOVE-VMSWITCH -NAME $NOMC -FORCE -ERRORACTION STOP
+            AFFICHER-MESSAGE "COMMUTATEUR $NOMC SUPPRIME." "GREEN"
+        } CATCH {
+            AFFICHER-MESSAGE "ERREUR LORS de la suppression du commutateur : $($_.EXCEPTION.MESSAGE)" "RED"
+        }
+    } ELSE {
+        AFFICHER-MESSAGE "OPERATION ANNULEE." "YELLOW"
+    }
+    PAUSE
+}
+
+# --- GESTION DES CHECKPOINTS ---
+function LISTER-CHECKPOINTS {
+    Clear-Host
+    AFFICHER-MESSAGE "VMS disponibles :" "CYAN"
+    $vms = GET-VM
+    if ($vms.Count -eq 0) { AFFICHER-MESSAGE "AUCUNE VM TROUVEE." "RED"; PAUSE; RETURN }
+    
+    $donnees_vm = @()
+    for ($i = 0; $i -lt $vms.Count; $i++) {
+        $donnees_vm += [PSCustomObject]@{
+            "NUMERO" = $i+1
+            "NOM" = $vms[$i].NAME
+        }
+    }
+    AFFICHER-TABLEAU @("NUMERO", "NOM") $donnees_vm
+
+    $CHOIX_VM = SAISIR-NOMBRE "NUMERO de la VM pour laquelle lister les checkpoints" 1 $vms.COUNT
+    $VMNAME = $vms[$CHOIX_VM-1].NAME
+
+    TRY {
+        $cps = GET-VMCHECKPOINT -VMNAME $VMNAME -ERRORACTION STOP | SELECT-OBJECT NAME, CREATETIME
+        AFFICHER-MESSAGE "LISTE des checkpoints de $VMNAME :" "CYAN"
+        IF (-NOT $cps) {
+            AFFICHER-MESSAGE "AUCUN CHECKPOINT TROUVE pour cette VM." "RED"
+        } ELSE {
+            $donnees_cp = @()
+            foreach ($cp in $cps) {
+                $donnees_cp += [PSCustomObject]@{
+                    NOM = $cp.NAME
+                    DATE = $cp.CREATETIME.ToString("yyyy-MM-dd HH:mm:ss")
+                }
+            }
+            $entetes_cp = "NOM", "DATE"
+            AFFICHER-TABLEAU $entetes_cp $donnees_cp
+        }
+    } CATCH {
+        AFFICHER-MESSAGE "ERREUR : $($_.EXCEPTION.MESSAGE)" "RED"
+    }
+    PAUSE
+}
+
+function CREER-CHECKPOINT {
+    Clear-Host
+    AFFICHER-MESSAGE "VMS disponibles :" "CYAN"
+    $vms = GET-VM
+    if ($vms.Count -eq 0) { AFFICHER-MESSAGE "AUCUNE VM TROUVEE." "RED"; PAUSE; RETURN }
+    
+    $donnees_vm = @()
+    for ($i = 0; $i -lt $vms.Count; $i++) {
+        $donnees_vm += [PSCustomObject]@{
+            "NUMERO" = $i+1
+            "NOM" = $vms[$i].NAME
+        }
+    }
+    AFFICHER-TABLEAU @("NUMERO", "NOM") $donnees_vm
+
+    $CHOIX_VM = SAISIR-NOMBRE "NUMERO de la VM pour laquelle creer un checkpoint" 1 $vms.COUNT
+    $VMNAME = $vms[$CHOIX_VM-1].NAME
+
+    $CPNAME = READ-HOST "NOM du nouveau checkpoint"
+    TRY {
+        CHECKPOINT-VM -VMNAME $VMNAME -SNAPSHOTNAME $CPNAME -ERRORACTION STOP
+        AFFICHER-MESSAGE "CHECKPOINT '$CPNAME' CREE pour la VM '$VMNAME'." "GREEN"
+    } CATCH {
+        AFFICHER-MESSAGE "ERREUR LORS de la creation du checkpoint : $($_.EXCEPTION.MESSAGE)" "RED"
+    }
+    PAUSE
+}
+
+function RESTAURER-CHECKPOINT {
+    Clear-Host
+    AFFICHER-MESSAGE "VMS disponibles :" "CYAN"
+    $vms = GET-VM
+    if ($vms.Count -eq 0) { AFFICHER-MESSAGE "AUCUNE VM TROUVEE." "RED"; PAUSE; RETURN }
+    
+    $donnees_vm = @()
+    for ($i = 0; $i -lt $vms.Count; $i++) {
+        $donnees_vm += [PSCustomObject]@{
+            "NUMERO" = $i+1
+            "NOM" = $vms[$i].NAME
+        }
+    }
+    AFFICHER-TABLEAU @("NUMERO", "NOM") $donnees_vm
+    
+    $CHOIX_VM = SAISIR-NOMBRE "NUMERO de la VM a restaurer" 1 $vms.COUNT
+    $VMNAME = $vms[$CHOIX_VM-1].NAME
+
+    $cps = GET-VMCHECKPOINT -VMNAME $VMNAME
+    if ($cps.Count -eq 0) {
+        AFFICHER-MESSAGE "AUCUN CHECKPOINT TROUVE pour la VM '$VMNAME'." "RED"
+        PAUSE
+        RETURN
+    }
+    
+    AFFICHER-MESSAGE "CHECKPOINTS disponibles pour la VM '$VMNAME' :" "CYAN"
+    $donnees_cp = @()
+    for ($i = 0; $i -lt $cps.Count; $i++) {
+        $donnees_cp += [PSCustomObject]@{
+            "NUMERO" = $i+1
+            "NOM" = $cps[$i].Name
+        }
+    }
+    AFFICHER-TABLEAU @("NUMERO", "NOM") $donnees_cp
+    
+    $CHOIX_CP = SAISIR-NOMBRE "NUMERO du checkpoint a restaurer" 1 $cps.Count
+    $CPNAME = $cps[$CHOIX_CP-1].Name
+
+    $confirm = READ-HOST "ETES-VOUS CERTAIN de vouloir restaurer le checkpoint '$CPNAME' pour la VM '$VMNAME' ? CELA PERDRA TOUTES LES DONNEES DEPUIS le dernier point. TAPEZ le nom du checkpoint pour confirmer"
+    IF ($confirm -EQ $CPNAME) {
+        TRY {
+            RESTORE-VMCHECKPOINT -VMNAME $VMNAME -NAME $CPNAME -FORCE -ERRORACTION STOP
+            AFFICHER-MESSAGE "VM '$VMNAME' RESTAUREE au checkpoint '$CPNAME'." "GREEN"
+        } CATCH {
+            AFFICHER-MESSAGE "ERREUR LORS de la restauration du checkpoint : $($_.EXCEPTION.MESSAGE)" "RED"
+        }
+    } ELSE {
+        AFFICHER-MESSAGE "OPERATION ANNULEE." "YELLOW"
+    }
+    PAUSE
+}
+
+function SUPPRIMER-CHECKPOINT {
+    Clear-Host
+    AFFICHER-MESSAGE "VMS disponibles :" "CYAN"
+    $vms = GET-VM
+    if ($vms.Count -eq 0) { AFFICHER-MESSAGE "AUCUNE VM TROUVEE." "RED"; PAUSE; RETURN }
+    
+    $donnees_vm = @()
+    for ($i = 0; $i -lt $vms.Count; $i++) {
+        $donnees_vm += [PSCustomObject]@{
+            "NUMERO" = $i+1
+            "NOM" = $vms[$i].NAME
+        }
+    }
+    AFFICHER-TABLEAU @("NUMERO", "NOM") $donnees_vm
+
+    $CHOIX_VM = SAISIR-NOMBRE "NUMERO de la VM" 1 $vms.COUNT
+    $VMNAME = $vms[$CHOIX_VM-1].NAME
+
+    $cps = GET-VMCHECKPOINT -VMNAME $VMNAME
+    if ($cps.Count -eq 0) {
+        AFFICHER-MESSAGE "AUCUN CHECKPOINT TROUVE pour la VM '$VMNAME'." "RED"
+        PAUSE
+        RETURN
+    }
+    
+    AFFICHER-MESSAGE "CHECKPOINTS disponibles pour la VM '$VMNAME' :" "CYAN"
+    $donnees_cp = @()
+    for ($i = 0; $i -lt $cps.Count; $i++) {
+        $donnees_cp += [PSCustomObject]@{
+            "NUMERO" = $i+1
+            "NOM" = $cps[$i].Name
+        }
+    }
+    AFFICHER-TABLEAU @("NUMERO", "NOM") $donnees_cp
+    
+    $CHOIX_CP = SAISIR-NOMBRE "NUMERO du checkpoint a supprimer" 1 $cps.Count
+    $CPNAME = $cps[$CHOIX_CP-1].Name
+
+    $confirm = READ-HOST "ETES-VOUS CERTAIN de vouloir supprimer le checkpoint '$CPNAME' de la VM '$VMNAME' ? TAPEZ le nom du checkpoint pour confirmer"
+    IF ($confirm -EQ $CPNAME) {
+        TRY {
+            REMOVE-VMCHECKPOINT -VMNAME $VMNAME -NAME $CPNAME -FORCE -ERRORACTION STOP
+            AFFICHER-MESSAGE "CHECKPOINT '$CPNAME' SUPPRIME." "GREEN"
+        } CATCH {
+            AFFICHER-MESSAGE "ERREUR LORS de la suppression du checkpoint : $($_.EXCEPTION.MESSAGE)" "RED"
+        }
+    } ELSE {
+        AFFICHER-MESSAGE "OPERATION ANNULEE." "YELLOW"
+    }
+    PAUSE
+}
+
+# --- GESTION DU STOCKAGE ---
+function GERER-STOCKAGE {
+    DO {
+        Clear-Host
+        AFFICHER-MESSAGE "GESTION DU STOCKAGE" "DARKMAGENTA"
+        AFFICHER-MESSAGE "1. LISTER les disques VHDX" "WHITE"
+        AFFICHER-MESSAGE "2. CREER un disque VHDX" "WHITE"
+        AFFICHER-MESSAGE "3. SUPPRIMER un disque VHDX" "WHITE"
+        AFFICHER-MESSAGE "4. REDIMENSIONNER un disque VHDX" "WHITE"
+        AFFICHER-MESSAGE "5. ATTACHER un disque a une VM" "WHITE"
+        AFFICHER-MESSAGE "6. DETACHER un disque d'une VM" "WHITE"
+        AFFICHER-MESSAGE "R. RAFRAICHIR / RECENTER le menu" "WHITE"
+        AFFICHER-MESSAGE "B. RETOUR menu avance" "WHITE"
+        $CHOIX_STOCK = READ-HOST "VOTRE CHOIX (1-6, R ou B)"
+
+        SWITCH ($CHOIX_STOCK.TOUPPER()) {
+            1 { LISTER-VHDX }
+            2 { CREER-VHDX }
+            3 { SUPPRIMER-VHDX }
+            4 { REDIMENSIONNER-VHDX }
+            5 { ATTACHER-VHDX }
+            6 { DETACHER-VHDX }
+            "B" { Clear-Host; AFFICHER-MESSAGE "RETOUR menu avance" "MAGENTA"; RETURN }
+            "R" { CONTINUE }
+            DEFAULT { AFFICHER-MESSAGE "CHOIX INVALIDE" "RED"; PAUSE }
+        }
+    } WHILE ($TRUE)
+}
+
+function LISTER-VHDX {
+    Clear-Host
+    AFFICHER-MESSAGE "LISTE des disques virtuels (.VHDX) sur ce serveur" "CYAN"
+    $vhds = GET-VHD | SELECT-OBJECT PATH, VHDTYPE, FILESIZE, SIZE
+    IF (-NOT $vhds) {
+        AFFICHER-MESSAGE "AUCUN DISQUE VIRTUEL TROUVE." "RED"
+    } ELSE {
+        $donnees_vhdx = @()
+        foreach ($vhd in $vhds) {
+            $donnees_vhdx += [PSCustomObject]@{
+                CHEMIN = $vhd.PATH
+                TYPE = $vhd.VHDTYPE
+                "TAILLE REELLE" = "{0:N2} GB" -f ($vhd.FILESIZE / 1GB)
+                "TAILLE MAX" = "{0:N2} GB" -f ($vhd.SIZE / 1GB)
+            }
+        }
+        $entetes_vhdx = "CHEMIN", "TYPE", "TAILLE REELLE", "TAILLE MAX"
+        AFFICHER-TABLEAU $entetes_vhdx $donnees_vhdx
+    }
+    PAUSE
+}
+
+function CREER-VHDX {
+    Clear-Host
+    $PATH = READ-HOST "CHEMIN COMPLET du nouveau disque VHDX (EX: C:\DISQUES\NOUVEAU.VHDX)"
+    $TAILLE = SAISIR-NOMBRE "TAILLE du disque en GO (EX: 50)" 1 2048
+    $TYPE = SAISIR-CHOIX "TYPE de disque (DYNAMIC, FIXED)" @("DYNAMIC", "FIXED")
+    TRY {
+        $SIZE_BYTES = [long]($TAILLE * 1GB)
+        NEW-VHD -PATH $PATH -SIZEBYTES $SIZE_BYTES -VHDTYPE $TYPE -ERRORACTION STOP
+        AFFICHER-MESSAGE "DISQUE VHDX CREE : $PATH" "GREEN"
+    } CATCH {
+        AFFICHER-MESSAGE "ERREUR LORS de la creation du VHDX : $($_.EXCEPTION.MESSAGE)" "RED"
+    }
+    PAUSE
+}
+
+function SUPPRIMER-VHDX {
+    Clear-Host
+    $vhds = GET-VHD
+    if ($vhds.Count -eq 0) {
+        AFFICHER-MESSAGE "AUCUN DISQUE VIRTUEL TROUVE a supprimer." "RED"
+        PAUSE
+        RETURN
+    }
+    AFFICHER-MESSAGE "DISQUES virtuels disponibles a supprimer :" "CYAN"
+    $donnees_vhdx = @()
+    for ($i = 0; $i -lt $vhds.Count; $i++) {
+        $donnees_vhdx += [PSCustomObject]@{
+            "NUMERO" = $i+1
+            "CHEMIN" = $vhds[$i].PATH
+        }
+    }
+    AFFICHER-TABLEAU @("NUMERO", "CHEMIN") $donnees_vhdx
+    
+    $CHOIX_VHD = SAISIR-NOMBRE "NUMERO du disque a supprimer" 1 $vhds.Count
+    $PATH = $vhds[$CHOIX_VHD-1].Path
+    $confirm = READ-HOST "ETES-VOUS CERTAIN de vouloir supprimer definitivement le disque '$PATH' ? TAPEZ le nom pour confirmer"
+    IF ($confirm -EQ (SPLIT-PATH $PATH -LEAF)) {
+        TRY {
+            REMOVE-ITEM -PATH $PATH -FORCE -ERRORACTION STOP
+            AFFICHER-MESSAGE "DISQUE VHDX SUPPRIME." "GREEN"
+        } CATCH {
+            AFFICHER-MESSAGE "ERREUR LORS de la suppression du VHDX : $($_.EXCEPTION.MESSAGE)" "RED"
+        }
+    } ELSE {
+        AFFICHER-MESSAGE "OPERATION ANNULEE." "YELLOW"
+    }
+    PAUSE
+}
+
+function REDIMENSIONNER-VHDX {
+    Clear-Host
+    $vhds = GET-VHD
+    if ($vhds.Count -eq 0) {
+        AFFICHER-MESSAGE "AUCUN DISQUE VIRTUEL TROUVE a redimensionner." "RED"
+        PAUSE
+        RETURN
+    }
+    AFFICHER-MESSAGE "DISQUES virtuels disponibles a redimensionner :" "CYAN"
+    $donnees_vhdx = @()
+    for ($i = 0; $i -lt $vhds.Count; $i++) {
+        $donnees_vhdx += [PSCustomObject]@{
+            "NUMERO" = $i+1
+            "CHEMIN" = $vhds[$i].PATH
+        }
+    }
+    AFFICHER-TABLEAU @("NUMERO", "CHEMIN") $donnees_vhdx
+
+    $CHOIX_VHD = SAISIR-NOMBRE "NUMERO du disque a redimensionner" 1 $vhds.Count
+    $PATH = $vhds[$CHOIX_VHD-1].Path
+    $TAILLE_MAX = SAISIR-NOMBRE "NOUVELLE TAILLE du disque en GO" 1 2048
+    TRY {
+        RESIZE-VHD -PATH $PATH -SIZEBYTES ([long]($TAILLE_MAX * 1GB)) -ERRORACTION STOP
+        AFFICHER-MESSAGE "DISQUE VHDX REDIMENSIONNE a $TAILLE_MAX GO." "GREEN"
+    } CATCH {
+        AFFICHER-MESSAGE "ERREUR LORS du redimensionnement du VHDX : $($_.EXCEPTION.MESSAGE)" "RED"
+    }
+    PAUSE
+}
+
+function ATTACHER-VHDX {
+    Clear-Host
+    $VMS = GET-VM
+    $VHDX_FILES = GET-CHILDITEM -PATH "C:\" -FILTER "*.VHDX" -RECURSE -FORCE -ERRORACTION SILENTLYCONTINUE | SELECT-OBJECT -EXPAND FULLNAME
+    
+    if ($VMS.COUNT -eq 0 -or $VHDX_FILES.COUNT -eq 0) {
+        AFFICHER-MESSAGE "AUCUNE VM ou disque VHDX disponible." "RED"
+        PAUSE
+        RETURN
+    }
+
+    AFFICHER-MESSAGE "VMS disponibles :" "CYAN"
+    $donnees_vm = @()
+    for ($i = 0; $i -lt $VMS.Count; $i++) {
+        $donnees_vm += [PSCustomObject]@{
+            "NUMERO" = $i+1
+            "NOM" = $VMS[$i].NAME
+        }
+    }
+    AFFICHER-TABLEAU @("NUMERO", "NOM") $donnees_vm
+
+    $CHOIX_VM = SAISIR-NOMBRE "NUMERO de la VM a modifier" 1 $VMS.Count
+    $VMNAME = $VMS[$CHOIX_VM-1].NAME
+
+    AFFICHER-MESSAGE "DISQUES VHDX disponibles :" "CYAN"
+    $donnees_vhdx = @()
+    for ($i = 0; $i -lt $VHDX_FILES.Count; $i++) {
+        $donnees_vhdx += [PSCustomObject]@{
+            "NUMERO" = $i+1
+            "CHEMIN" = $VHDX_FILES[$i]
+        }
+    }
+    AFFICHER-TABLEAU @("NUMERO", "CHEMIN") $donnees_vhdx
+
+    $CHOIX_VHD = SAISIR-NOMBRE "NUMERO du disque a attacher" 1 $VHDX_FILES.Count
+    $VHD_PATH = $VHDX_FILES[$CHOIX_VHD-1]
+
+    TRY {
+        ADD-VMHARDDISKDRIVE -VMNAME $VMNAME -PATH $VHD_PATH -ERRORACTION STOP
+        AFFICHER-MESSAGE "DISQUE '$VHD_PATH' ATTACHE a la VM '$VMNAME'." "GREEN"
+    } CATCH {
+        AFFICHER-MESSAGE "ERREUR LORS de l'attache du disque : $($_.EXCEPTION.MESSAGE)" "RED"
+    }
+    PAUSE
+}
+
+function DETACHER-VHDX {
+    Clear-Host
+    $VMS = GET-VM
+    if ($VMS.COUNT -eq 0) {
+        AFFICHER-MESSAGE "AUCUNE VM TROUVEE." "RED"
+        PAUSE
+        RETURN
+    }
+
+    AFFICHER-MESSAGE "VMS disponibles :" "CYAN"
+    $donnees_vm = @()
+    for ($i = 0; $i -lt $VMS.Count; $i++) {
+        $donnees_vm += [PSCustomObject]@{
+            "NUMERO" = $i+1
+            "NOM" = $VMS[$i].NAME
+        }
+    }
+    AFFICHER-TABLEAU @("NUMERO", "NOM") $donnees_vm
+
+    $CHOIX_VM = SAISIR-NOMBRE "NUMERO de la VM a modifier" 1 $VMS.Count
+    $VMNAME = $VMS[$CHOIX_VM-1].NAME
+
+    $VHD_DRIVES = GET-VMHARDDISKDRIVE -VMNAME $VMNAME
+    if ($VHD_DRIVES.COUNT -eq 0) {
+        AFFICHER-MESSAGE "AUCUN DISQUE VHDX ATTACHE a cette VM." "YELLOW"
+        PAUSE
+        RETURN
+    }
+
+    AFFICHER-MESSAGE "DISQUES attaches :" "CYAN"
+    $donnees_vhd = @()
+    for ($i = 0; $i -lt $VHD_DRIVES.Count; $i++) {
+        $donnees_vhd += [PSCustomObject]@{
+            "NUMERO" = $i+1
+            "CHEMIN" = $VHD_DRIVES[$i].PATH
+        }
+    }
+    AFFICHER-TABLEAU @("NUMERO", "CHEMIN") $donnees_vhd
+
+    $CHOIX_VHD = SAISIR-NOMBRE "NUMERO du disque a detacher" 1 $VHD_DRIVES.Count
+    $VHD_TO_REMOVE = $VHD_DRIVES[$CHOIX_VHD-1].PATH
+
+    TRY {
+        REMOVE-VMHARDDISKDRIVE -VMNAME $VMNAME -PATH $VHD_TO_REMOVE -ERRORACTION STOP
+        AFFICHER-MESSAGE "DISQUE '$VHD_TO_REMOVE' DETACHE de la VM '$VMNAME'." "GREEN"
+    } CATCH {
+        AFFICHER-MESSAGE "ERREUR LORS du detachement du disque : $($_.EXCEPTION.MESSAGE)" "RED"
+    }
+    PAUSE
+}
+
+# --- FONCTIONS SPECIALES ---
+function GESTION-PASSTHROUGH {
+    DO {
+        Clear-Host
+        AFFICHER-MESSAGE "GESTION des disques Passthrough" "DARKMAGENTA"
+        AFFICHER-MESSAGE "1. LISTER les disques physiques" "WHITE"
+        AFFICHER-MESSAGE "2. ATTACHER un disque physique a une VM" "WHITE"
+        AFFICHER-MESSAGE "B. RETOUR menu gestion stockage" "WHITE"
+        $CHOIX_PASS = READ-HOST "VOTRE CHOIX (1-2, B)"
+
+        SWITCH ($CHOIX_PASS.TOUPPER()) {
+            1 {
+                Clear-Host
+                AFFICHER-MESSAGE "LISTE des disques physiques" "CYAN"
+                $disques_phys = GET-DISK | SELECT-OBJECT NUMBER, FRIENDLYNAME, PATH, OPERATIONALSTATUS
+                $donnees_disques = @()
+                foreach ($disk in $disques_phys) {
+                    $donnees_disques += [PSCustomObject]@{
+                        NUMERO = $disk.NUMBER
+                        NOM = $disk.FRIENDLYNAME
+                        CHEMIN = $disk.PATH
+                        ETAT = $disk.OPERATIONALSTATUS
+                    }
+                }
+                $entetes_disques = "NUMERO", "NOM", "CHEMIN", "ETAT"
+                AFFICHER-TABLEAU $entetes_disques $donnees_disques
+                PAUSE
+            }
+            2 {
+                Clear-Host
+                $VMS = GET-VM
+                $disks = GET-DISK
+                
+                if ($VMS.COUNT -eq 0 -or $disks.COUNT -eq 0) {
+                    AFFICHER-MESSAGE "AUCUNE VM ou disque physique disponible." "RED"
+                    PAUSE
+                    BREAK
+                }
+
+                AFFICHER-MESSAGE "VMS disponibles :" "CYAN"
+                $donnees_vm = @()
+                for ($i = 0; $i -lt $VMS.Count; $i++) {
+                    $donnees_vm += [PSCustomObject]@{
+                        "NUMERO" = $i+1
+                        "NOM" = $VMS[$i].NAME
+                    }
+                }
+                AFFICHER-TABLEAU @("NUMERO", "NOM") $donnees_vm
+                
+                $CHOIX_VM = SAISIR-NOMBRE "NUMERO de la VM" 1 $VMS.Count
+                $VMNAME = $VMS[$CHOIX_VM-1].NAME
+                
+                AFFICHER-MESSAGE "DISQUES physiques disponibles par numero :" "CYAN"
+                $donnees_disques = @()
+                for ($i = 0; $i -lt $disks.Count; $i++) {
+                    $donnees_disques += [PSCustomObject]@{
+                        "NUMERO" = $disks[$i].NUMBER
+                        "NOM" = $disks[$i].FriendlyName
+                    }
+                }
+                AFFICHER-TABLEAU @("NUMERO", "NOM") $donnees_disques
+
+                $CHOIX_DISK = SAISIR-NOMBRE "NUMERO du disque physique a attacher" 0 ($disks.Count-1)
+                
+                TRY {
+                    ADD-VMSCSICONTROLLER -VMNAME $VMNAME | OUT-NULL
+                    ADD-VMHARDDISKDRIVE -VMNAME $VMNAME -PASSTHROUGHDISKNUMBER $CHOIX_DISK -ERRORACTION STOP
+                    AFFICHER-MESSAGE "DISQUE physique numero $CHOIX_DISK ATTACHE a la VM '$VMNAME'." "GREEN"
+                } CATCH {
+                    AFFICHER-MESSAGE "ERREUR LORS de l'attache du disque Passthrough : $($_.EXCEPTION.MESSAGE)" "RED"
+                }
+                PAUSE
+            }
+            "B" { RETURN }
+            DEFAULT { AFFICHER-MESSAGE "CHOIX INVALIDE" "RED"; PAUSE }
+        }
+    } WHILE ($TRUE)
+}
+
+function GERER-RESEAU-VM {
+    Clear-Host
+    AFFICHER-MESSAGE "VMS DISPONIBLES A MODIFIER :" "CYAN"
+    $vms = GET-VM | SELECT-OBJECT NAME
+    
+    IF ($vms.COUNT -EQ 0) {
+        AFFICHER-MESSAGE "AUCUNE VM TROUVEE." "RED"
+        PAUSE
+        RETURN
+    }
+    
+    $donnees_vm = @()
+    for ($i = 0; $i -lt $vms.Count; $i++) {
+        $donnees_vm += [PSCustomObject]@{
+            "NUMERO" = $i+1
+            "NOM" = $vms[$i].NAME
+        }
+    }
+    AFFICHER-TABLEAU @("NUMERO", "NOM") $donnees_vm
+
+    $CHOIX_VM = SAISIR-NOMBRE "NUMERO DE LA VM A MODIFIER" 1 $vms.COUNT
+    $VMName = $vms[$CHOIX_VM-1].NAME
+    
+    AFFICHER-MESSAGE "CARTES RESEAUX DE '$VMName' :" "YELLOW"
+    
+    $vmNetAdapters = GET-VMNetworkAdapter -VMName $VMName
+    
+    IF ($vmNetAdapters.COUNT -EQ 0) {
+        AFFICHER-MESSAGE "CETTE VM N'A AUCUNE CARTE RESEAU." "RED"
+        PAUSE
+        RETURN
+    }
+
+    $donnees_cartes = @()
+    for ($i = 0; $i -lt $vmNetAdapters.Count; $i++) {
+        $donnees_cartes += [PSCustomObject]@{
+            "NUMERO" = $i+1
+            "NOM" = $vmNetAdapters[$i].NAME
+            "SWITCH" = $vmNetAdapters[$i].SWITCHNAME
+            "MAC" = $vmNetAdapters[$i].MACADDRESS
+        }
+    }
+    AFFICHER-TABLEAU @("NUMERO", "NOM", "SWITCH", "MAC") $donnees_cartes
+
+    $CHOIX_CARTE = SAISIR-NOMBRE "NUMERO DE LA CARTE RESEAU A MODIFIER" 1 $vmNetAdapters.COUNT
+    $vmNetAdapter = $vmNetAdapters[$CHOIX_CARTE-1]
+
+    AFFICHER-MESSAGE "SWITCHS VIRTUELS DISPONIBLES :" "CYAN"
+    $vmswitches = GET-VMSwitch | SELECT-OBJECT NAME, SWITCHTYPE
+    
+    $donnees_switch = @()
+    for ($i = 0; $i -lt $vmswitches.Count; $i++) {
+        $donnees_switch += [PSCustomObject]@{
+            "NUMERO" = $i+1
+            "NOM" = $vmswitches[$i].NAME
+            "TYPE" = $vmswitches[$i].SWITCHTYPE
+        }
+    }
+    AFFICHER-TABLEAU @("NUMERO", "NOM", "TYPE") $donnees_switch
+
+    $CHOIX_SWITCH = SAISIR-NOMBRE "NUMERO DU NOUVEAU SWITCH" 1 $vmswitches.Count
+    $NEW_SWITCH_NAME = $vmswitches[$CHOIX_SWITCH-1].NAME
+
+    AFFICHER-MESSAGE "TENTATIVE de modification de la carte '$($vmNetAdapter.Name)' vers le switch '$NEW_SWITCH_NAME'..." "YELLOW"
+    
+    TRY {
+        # Solution: Utiliser la commande Connect-VMNetworkAdapter, qui est plus fiable.
+        $vmNetAdapter | CONNECT-VMNetworkAdapter -SwitchName $NEW_SWITCH_NAME -ERRORACTION STOP
+        AFFICHER-MESSAGE "LA CARTE RESEAU '$($vmNetAdapter.Name)' DE LA VM '$VMName' A ETE CONNECTEE AU SWITCH '$NEW_SWITCH_NAME'." "GREEN"
+    } CATCH {
+        AFFICHER-MESSAGE "ERREUR LORS DU CHANGEMENT DE SWITCH: $($_.EXCEPTION.MESSAGE)" "RED"
+    }
+    PAUSE
+}
+
+function VERIFIER-PRE-REQUIS {
+    Clear-Host
+    AFFICHER-MESSAGE "VERIFICATION DES PRE-REQUIS..." "YELLOW"
+    TRY {
+        GET-VM | OUT-NULL
+        $VM_SERVICE_STATUS = GET-SERVICE -NAME "VMMS" | SELECT-OBJECT STATUS
+        if ($VM_SERVICE_STATUS.STATUS -eq "RUNNING") {
+            AFFICHER-MESSAGE "SERVICE HYPER-V EN COURS D'EXECUTION. TOUS LES MODULES POWERSHELL SONT DISPONIBLES." "GREEN"
+        } else {
+            AFFICHER-MESSAGE "SERVICE HYPER-V NON DEMARRE. TENTATIVE DE DEMARRAGE..." "RED"
+            START-SERVICE -NAME "VMMS" -ERRORACTION STOP
+            AFFICHER-MESSAGE "SERVICE HYPER-V DEMARRE AVEC SUCCES." "GREEN"
+        }
+    } CATCH {
+        AFFICHER-MESSAGE "ERREUR FATALE. LES MODULES POWERSHELL HYPER-V NE SONT PAS INSTALLES OU LE SERVICE N'A PAS PU ETRE DEMARRE." "RED"
+        AFFICHER-MESSAGE "$($_.EXCEPTION.MESSAGE)" "RED"
+        PAUSE
+        EXIT
+    }
+    PAUSE
+}
+
+# --- MENUS ---
+function MENU-PRINCIPAL {
+    DO {
+        Clear-Host
+        AFFICHER-MESSAGE "MENU PRINCIPAL" "BLUE"
+        AFFICHER-MESSAGE "1. GESTION DES MACHINES VIRTUELLES" "WHITE"
+        AFFICHER-MESSAGE "2. GESTION DES COMMUTATEURS VIRTUELS" "WHITE"
+        AFFICHER-MESSAGE "3. GESTION DES CHECKPOINTS" "WHITE"
+        AFFICHER-MESSAGE "4. GESTION DU STOCKAGE (en cours, a ne pas utiiliser)" "WHITE" 
+        AFFICHER-MESSAGE "R. RAFRAICHIR / RECENTER LE MENU" "WHITE"
+        AFFICHER-MESSAGE "Q. QUITTER" "WHITE"
+        $CHOIX_PRINCIPAL = READ-HOST "VOTRE CHOIX (1-4, R ou Q)"
+        SWITCH ($CHOIX_PRINCIPAL.TOUPPER()) {
+            1 { GESTION-VM }
+            2 { GESTION-COMMUTATEUR }
+            3 { GESTION-CHECKPOINT }
+            4 { GERER-STOCKAGE }
+            "R" { CONTINUE }
+            "Q" { EXIT }
+            DEFAULT { AFFICHER-MESSAGE "CHOIX INVALIDE" "RED"; PAUSE }
+        }
+    } WHILE ($TRUE)
+}
+
+function GESTION-VM {
+    DO {
+        Clear-Host
+        AFFICHER-MESSAGE "GESTION DES MACHINES VIRTUELLES" "DARKYELLOW"
+        AFFICHER-MESSAGE "1. LISTER LES VMS" "GRAY"
+        AFFICHER-MESSAGE "2. DEMARRER UNE VM" "GRAY"
+        AFFICHER-MESSAGE "3. ARRETER UNE VM" "GRAY"
+        AFFICHER-MESSAGE "4. REDEMARRER UNE VM" "GRAY"
+        AFFICHER-MESSAGE "5. CREER UNE VM" "GRAY"
+        AFFICHER-MESSAGE "6. SUPPRIMER UNE VM" "GRAY"
+        AFFICHER-MESSAGE "7. EXPORTER UNE VM" "GRAY"
+        AFFICHER-MESSAGE "8. CONFIGURER UNE VM" "GRAY"
+        AFFICHER-MESSAGE "9. GERER LES RESEAUX D'UNE VM" "GRAY"
+        AFFICHER-MESSAGE "R. RAFRAICHIR / RECENTER LE MENU" "GRAY"
+        AFFICHER-MESSAGE "B. RETOUR MENU PRINCIPAL" "GRAY"
+        $CHOIX_VM = READ-HOST "VOTRE CHOIX (1-9, R ou B)"
+        SWITCH ($CHOIX_VM.TOUPPER()) {
+            1 { LISTER-VM }
+            2 { DEMARRER-VM }
+            3 { ARRETER-VM }
+            4 { REDEMARRER-VM }
+            5 { CREER-VM }
+            6 { SUPPRIMER-VM }
+            7 { EXPORTER-VM }
+            8 { CONFIGURER-VM }
+            9 { GERER-RESEAU-VM }
+            "B" { RETURN }
+            "R" { CONTINUE }
+            DEFAULT { AFFICHER-MESSAGE "CHOIX INVALIDE" "RED"; PAUSE }
+        }
+    } WHILE ($TRUE)
+}
+
+function GESTION-COMMUTATEUR {
+    DO {
+        Clear-Host
+        AFFICHER-MESSAGE "GESTION COMMUTATEUR HYPER-V" "DARKMAGENTA"
+        AFFICHER-MESSAGE "1. LISTER LES COMMUTATEURS" "GRAY"
+        AFFICHER-MESSAGE "2. CREER UN COMMUTATEUR" "GRAY"
+        AFFICHER-MESSAGE "3. SUPPRIMER UN COMMUTATEUR" "GRAY"
+        AFFICHER-MESSAGE "R. RAFRAICHIR / RECENTER LE MENU" "GRAY"
+        AFFICHER-MESSAGE "B. RETOUR MENU PRINCIPAL" "GRAY"
+        $CHOIXC = READ-HOST "VOTRE CHOIX (1-3, R ou B)"
+        SWITCH ($CHOIXC.TOUPPER()) {
+            1 { LISTER-COMMUTATEUR }
+            2 { CREER-COMMUTATEUR }
+            3 { SUPPRIMER-COMMUTATEUR }
+            "B" { RETURN }
+            "R" { CONTINUE }
+            DEFAULT { AFFICHER-MESSAGE "CHOIX INVALIDE" "RED"; PAUSE }
+        }
+    } WHILE ($TRUE)
+}
+
+function GESTION-CHECKPOINT {
+    DO {
+        Clear-Host
+        AFFICHER-MESSAGE "GESTION DES CHECKPOINTS" "DARKBLUE"
+        AFFICHER-MESSAGE "1. LISTER LES CHECKPOINTS" "WHITE"
+        AFFICHER-MESSAGE "2. CREER UN CHECKPOINT" "WHITE"
+        AFFICHER-MESSAGE "3. RESTAURER UN CHECKPOINT" "WHITE"
+        AFFICHER-MESSAGE "4. SUPPRIMER UN CHECKPOINT" "WHITE"
+        AFFICHER-MESSAGE "R. RAFRAICHIR / RECENTER LE MENU" "WHITE"
+        AFFICHER-MESSAGE "B. RETOUR MENU PRINCIPAL" "WHITE"
+        $CHOIX_SNAP = READ-HOST "VOTRE CHOIX (1-4, R ou B)"
+        SWITCH ($CHOIX_SNAP.TOUPPER()) {
+            1 { LISTER-CHECKPOINTS }
+            2 { CREER-CHECKPOINT }
+            3 { RESTAURER-CHECKPOINT }
+            4 { SUPPRIMER-CHECKPOINT }
+            "B" { RETURN }
+            "R" { CONTINUE }
+            DEFAULT { AFFICHER-MESSAGE "CHOIX INVALIDE" "RED"; PAUSE }
+        }
+    } WHILE ($TRUE)
+}
+
+# --- DEMARRAGE DU SCRIPT ---
+VERIFIER-PRE-REQUIS
+MENU-PRINCIPAL
